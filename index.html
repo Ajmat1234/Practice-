@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hindi Spell Checker (Grammarly API)</title>
+    <title>Hindi Spell Checker</title>
     <style>
         body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
         textarea { width: 80%; height: 150px; margin: 10px 0; font-size: 18px; }
@@ -15,7 +15,7 @@
 </head>
 <body>
 
-    <h2>Hindi Spell Checker (Grammarly API)</h2>
+    <h2>Hindi Spell Checker</h2>
     
     <textarea id="unicodeText" placeholder="अपना हिंदी टेक्स्ट यहाँ डालें..."></textarea><br>
     <button onclick="checkSpelling()">Check Spelling</button>
@@ -29,7 +29,7 @@
     <script>
         async function checkSpelling() {
             let text = document.getElementById("unicodeText").value;
-            let apiUrl = "https://practice-production-e8b9.up.railway.app/spell-check";  // Grammarly API URL
+            let apiUrl = "https://practice-production-e8b9.up.railway.app/spell-check";  // LanguageTool API URL
 
             try {
                 let response = await fetch(apiUrl, {
@@ -47,7 +47,7 @@
                 document.getElementById("debugOutput").textContent = JSON.stringify(result, null, 2);
 
                 let checkedText = result.checkedText.map(wordObj => {
-                    if (!wordObj.correct) {
+                    if (!wordObj.correct && wordObj.suggestions.length > 0) {
                         return `<span class="highlight" onclick="replaceWord(this, '${wordObj.suggestions[0]}')">${wordObj.word}</span>`;
                     } else {
                         return wordObj.word;
