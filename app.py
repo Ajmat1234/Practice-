@@ -1,3 +1,4 @@
+import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from indicnlp.tokenize import indic_tokenize
@@ -5,37 +6,20 @@ from indicnlp.tokenize import indic_tokenize
 app = Flask(__name__)
 CORS(app)
 
-@app.route("/spell-check", methods=["POST"], strict_slashes=False)
+# Indic NLP resources ka path set karo
+INDIC_RESOURCES_PATH = os.environ.get("INDIC_RESOURCES_PATH", "./indic_nlp_resources")
+os.environ["INDIC_RESOURCES_PATH"] = INDIC_RESOURCES_PATH
+
+@app.route("/spell-check", methods=["POST"])
 def spell_check():
-    try:
-        data = request.get_json()
-        text = data.get("text", "")
+    data = request.get_json()
+    text = data.get("text", "")
 
-        if not text:
-            return jsonify({"error": "Text is empty"}), 400
+    if not text:
+        return jsonify({"error": "Text is empty"}), 400
 
-        words = indic_tokenize.trivial_tokenize(text)
-        checked_words = []
-
-        # Dummy spell-check logic (Proper dictionary required)
-        for word in words:
-            if word == "स्पेल्ल":
-                checked_words.append({
-                    "word": word,
-                    "correct": False,
-                    "suggestions": ["स्पेल"]
-                })
-            else:
-                checked_words.append({
-                    "word": word,
-                    "correct": True,
-                    "suggestions": []
-                })
-
-        return jsonify({"checkedText": checked_words})
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    words = indic_tokenize.trivial_tokenize(text)
+    return jsonify({"words": words})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    app.run(host="0.0.0.0", port=8000)
