@@ -17,19 +17,19 @@
 
     <h2>Hindi Spell Checker</h2>
     
-    <textarea id="unicodeText" placeholder="अपना हिंदी टेक्स्ट यहाँ डालें..."></textarea><br>
+    <textarea id="unicodeText" placeholder="अपना हिंदी टेक्स्ट यहाँ डालें...">मुझे spell check करना है</textarea><br>
     <button onclick="checkSpelling()">Check Spelling</button>
     
     <h3>Spell Checked Text:</h3>
     <div id="spellCheckedText" contenteditable="true"></div>
 
     <h3>Debug Output:</h3>
-    <pre id="debugOutput"></pre>
+    <pre id="debugOutput">Debugging Info...</pre>
 
     <script>
         async function checkSpelling() {
             let text = document.getElementById("unicodeText").value;
-            let apiUrl = "https://practice-production-e8b9.up.railway.app/spell-check";  // LanguageTool API URL
+            let apiUrl = "https://practice-production-e8b9.up.railway.app/spell-check";  // API URL
 
             try {
                 let response = await fetch(apiUrl, {
@@ -39,12 +39,15 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error("Server Response: " + response.status + " " + response.statusText);
+                    throw new Error("Server Error: " + response.status + " " + response.statusText);
                 }
 
                 let result = await response.json();
-
                 document.getElementById("debugOutput").textContent = JSON.stringify(result, null, 2);
+
+                if (!result.checkedText || result.checkedText.length === 0) {
+                    throw new Error("No corrections found! API response invalid.");
+                }
 
                 let checkedText = result.checkedText.map(wordObj => {
                     if (!wordObj.correct && wordObj.suggestions.length > 0) {
@@ -55,6 +58,7 @@
                 }).join(" ");
 
                 document.getElementById("spellCheckedText").innerHTML = checkedText;
+
             } catch (error) {
                 document.getElementById("debugOutput").textContent = "Error: " + error.message;
             }
