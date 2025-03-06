@@ -1,12 +1,11 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import hunspell
+from spellchecker import SpellChecker
 
 app = Flask(__name__)
-CORS(app)  # Allow cross-origin requests
+CORS(app)
 
-# Load Hunspell dictionary
-h = hunspell.HunSpell('/usr/share/hunspell/hi_IN.dic', '/usr/share/hunspell/hi_IN.aff')
+spell = SpellChecker(language='hi')  # Hindi spell checker
 
 @app.route("/spell-check", methods=["POST"], strict_slashes=False)
 def spell_check():
@@ -21,8 +20,8 @@ def spell_check():
         checked_words = []
 
         for word in words:
-            if not h.spell(word):  # If word is incorrect
-                suggestions = h.suggest(word)
+            if word not in spell:
+                suggestions = list(spell.candidates(word))
                 checked_words.append({
                     "word": word,
                     "correct": False,
