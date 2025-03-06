@@ -49,6 +49,5 @@ def spell_check():
 
 if __name__ == "__main__":
     import os
-
-port = int(os.environ.get("PORT", 8000))  # Railway ka PORT use karega
-app.run(host="0.0.0.0", port=port, debug=True)
+    port = int(os.environ.get("PORT", 8000))  # Default 8000 port
+    app.run(host="0.0.0.0", port=port, debug=True)
