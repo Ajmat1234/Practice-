@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hindi Spell Checker</title>
+    <title>Hindi Spell Checker (Grammarly API)</title>
     <style>
         body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
         textarea { width: 80%; height: 150px; margin: 10px 0; font-size: 18px; }
@@ -15,22 +15,22 @@
 </head>
 <body>
 
-    <h2>Hindi Spell Checker (Mangal to Krutidev Input)</h2>
+    <h2>Hindi Spell Checker (Grammarly API)</h2>
     
-    <textarea id="unicodeText" placeholder="Mangal (Unicode) text paste karo..."></textarea><br>
+    <textarea id="unicodeText" placeholder="अपना हिंदी टेक्स्ट यहाँ डालें..."></textarea><br>
     <button onclick="checkSpelling()">Check Spelling</button>
     
     <h3>Spell Checked Text:</h3>
     <div id="spellCheckedText" contenteditable="true"></div>
 
     <h3>Debug Output:</h3>
-    <pre id="debugOutput"></pre> <!-- Debugging ke liye API response yahan show hoga -->
+    <pre id="debugOutput"></pre>
 
     <script>
         async function checkSpelling() {
             let text = document.getElementById("unicodeText").value;
-            let apiUrl = "https://practice-production-e8b9.up.railway.app/spell-check"; // Backend API URL
-            
+            let apiUrl = "https://practice-production-e8b9.up.railway.app/spell-check";  // Grammarly API URL
+
             try {
                 let response = await fetch(apiUrl, {
                     method: "POST",
@@ -44,12 +44,11 @@
 
                 let result = await response.json();
 
-                // Debugging ke liye API response dikhana
                 document.getElementById("debugOutput").textContent = JSON.stringify(result, null, 2);
 
                 let checkedText = result.checkedText.map(wordObj => {
                     if (!wordObj.correct) {
-                        return `<span class="highlight" contenteditable="true" oninput="convertKrutidev(this)">${wordObj.word}</span>`;
+                        return `<span class="highlight" onclick="replaceWord(this, '${wordObj.suggestions[0]}')">${wordObj.word}</span>`;
                     } else {
                         return wordObj.word;
                     }
@@ -61,39 +60,9 @@
             }
         }
 
-        function convertKrutidev(span) {
-            let krutidevText = span.innerText;
-            let conversionMap = {
-                "¼": "अ", "½": "आ", "¾": "इ", "¿": "ई", "À": "उ",
-                "Á": "ऊ", "Â": "ऋ", "Ã": "ए", "Ä": "ऐ", "Å": "ओ",
-                "Æ": "औ", "Ç": "अं", "È": "अः", "É": "ऍ", "Ê": "ऑ",
-                "Ë": "ऒ", "Ì": "ऎ", "Í": "औ़",
-                
-                "Š": "क", "‹": "ख", "Œ": "ग", "Ž": "घ", "": "ङ",
-                "": "च", "’": "छ", "“": "ज", "”": "झ", "•": "ञ",
-                "–": "ट", "—": "ठ", "˜": "ड", "™": "ढ", "š": "ण",
-                "›": "त", "œ": "थ", "ž": "द", "Ÿ": "ध", " ": "न",
-                "¡": "प", "¢": "फ", "£": "ब", "¤": "भ", "¥": "म",
-                "¦": "य", "§": "र", "¨": "ल", "©": "व", "ª": "श",
-                "«": "ष", "¬": "स", "­": "ह", "®": "क्ष", "¯": "त्र",
-                "°": "ज्ञ",
-
-                "±": "ा", "³": "ि", "´": "ी", "µ": "ु", "¶": "ू",
-                "·": "ृ", "¸": "े", "¹": "ै", "º": "ो", "»": "ौ",
-                "²": "ँ", "Î": "़", "Ï": "्",
-
-                "&": "्", "Û": "़", "×": "।", "Ø": "॥", "Ù": "₹",
-
-                "0": "०", "1": "१", "2": "२", "3": "३", "4": "४",
-                "5": "५", "6": "६", "7": "७", "8": "८", "9": "९"
-            };
-
-            let unicodeText = "";
-            for (let char of krutidevText) {
-                unicodeText += conversionMap[char] || char;
-            }
-
-            span.innerText = unicodeText;
+        function replaceWord(element, correctWord) {
+            element.innerText = correctWord;
+            element.classList.remove("highlight");
         }
     </script>
 
