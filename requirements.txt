@@ -1,5 +1,4 @@
 flask
 flask-cors
-gunicorn
 indic-nlp-library
-hindi-spellchecker
+spellchecker
