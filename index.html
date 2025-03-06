@@ -10,6 +10,7 @@
         button { padding: 10px; font-size: 16px; cursor: pointer; }
         #spellCheckedText { font-size: 18px; color: black; margin-top: 10px; border: 1px solid #ccc; padding: 10px; min-height: 50px; }
         .highlight { color: red; font-weight: bold; border-bottom: 2px dotted red; cursor: pointer; }
+        #debugOutput { border: 1px solid #ccc; padding: 10px; max-height: 150px; overflow: auto; text-align: left; font-size: 14px; background: #f9f9f9; }
     </style>
 </head>
 <body>
@@ -22,29 +23,42 @@
     <h3>Spell Checked Text:</h3>
     <div id="spellCheckedText" contenteditable="true"></div>
 
+    <h3>Debug Output:</h3>
+    <pre id="debugOutput"></pre> <!-- Debugging ke liye API response yahan show hoga -->
+
     <script>
         async function checkSpelling() {
             let text = document.getElementById("unicodeText").value;
             let apiUrl = "https://practice-production-e8b9.up.railway.app/spell-check"; // Backend API URL
             
-            let response = await fetch(apiUrl, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({ text: text })
-            });
+            try {
+                let response = await fetch(apiUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text: text })
+                });
 
-            let result = await response.json();
-            let checkedText = result.checkedText.map(wordObj => {
-                if (!wordObj.correct) {
-                    return `<span class="highlight" contenteditable="true" oninput="convertKrutidev(this)">${wordObj.word}</span>`;
-                } else {
-                    return wordObj.word;
+                if (!response.ok) {
+                    throw new Error("Server Response: " + response.status + " " + response.statusText);
                 }
-            }).join(" ");
 
-            document.getElementById("spellCheckedText").innerHTML = checkedText;
+                let result = await response.json();
+
+                // Debugging ke liye API response dikhana
+                document.getElementById("debugOutput").textContent = JSON.stringify(result, null, 2);
+
+                let checkedText = result.checkedText.map(wordObj => {
+                    if (!wordObj.correct) {
+                        return `<span class="highlight" contenteditable="true" oninput="convertKrutidev(this)">${wordObj.word}</span>`;
+                    } else {
+                        return wordObj.word;
+                    }
+                }).join(" ");
+
+                document.getElementById("spellCheckedText").innerHTML = checkedText;
+            } catch (error) {
+                document.getElementById("debugOutput").textContent = "Error: " + error.message;
+            }
         }
 
         function convertKrutidev(span) {
