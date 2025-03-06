@@ -1,11 +1,4 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import language_tool_python
-
-app = Flask(__name__)
-CORS(app, resources={r"/spell-check": {"origins": "*"}})
-
-tool = language_tool_python.LanguageTool('hi')  # Hindi ke liye
+import requests
 
 @app.route("/spell-check", methods=["POST"], strict_slashes=False)
 def spell_check():
@@ -16,22 +9,24 @@ def spell_check():
         if not text:
             return jsonify({"error": "Text is empty"}), 400
 
-        matches = tool.check(text)
+        api_url = "https://api.languagetool.org/v2/check"
+        params = {"text": text, "language": "hi"}
+        response = requests.post(api_url, data=params)
+
+        if response.status_code != 200:
+            return jsonify({"error": "LanguageTool API failed"}), 500
+
+        matches = response.json()["matches"]
         checked_words = []
 
         for match in matches:
             checked_words.append({
-                "word": match.context,
+                "word": match["context"]["text"],
                 "correct": False,
-                "suggestions": match.replacements
+                "suggestions": match["replacements"]
             })
 
         return jsonify({"checkedText": checked_words})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port, debug=True)
