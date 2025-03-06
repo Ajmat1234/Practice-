@@ -8,8 +8,9 @@
         body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
         textarea { width: 80%; height: 150px; margin: 10px 0; font-size: 18px; }
         button { padding: 10px; font-size: 16px; cursor: pointer; }
-        #output { font-size: 18px; color: blue; margin-top: 10px; }
-        .highlight { color: red; font-weight: bold; cursor: pointer; }
+        #spellCheckedText { font-size: 18px; color: black; margin-top: 10px; }
+        .highlight { color: red; font-weight: bold; cursor: pointer; border-bottom: 2px dotted red; }
+        .editBox { font-size: 18px; width: auto; border: 1px solid blue; }
     </style>
 </head>
 <body>
@@ -26,7 +27,7 @@
         function checkSpelling() {
             let text = document.getElementById("unicodeText").value;
 
-            // Dummy spell checker (Actual backend call hoga)
+            // Dummy spell checker (Backend se actual check hoga)
             let wrongWords = ["गलती", "शब्द"]; // Example wrong words
             let words = text.split(" ");
             let highlightedText = words.map(word => 
@@ -38,17 +39,53 @@
 
         function editWord(span) {
             let oldText = span.innerText;
-            let newText = prompt("Krutidev me sahi shabd likho:", oldText);
-            if (newText) {
-                span.innerText = convertToUnicode(newText);
-            }
+            let inputBox = document.createElement("input");
+            inputBox.type = "text";
+            inputBox.value = oldText;
+            inputBox.className = "editBox";
+
+            inputBox.onblur = function () {
+                let newText = convertToUnicode(inputBox.value);
+                span.innerText = newText;
+                span.onclick = function () { editWord(span); };
+            };
+
+            span.innerHTML = "";
+            span.appendChild(inputBox);
+            inputBox.focus();
         }
 
         function convertToUnicode(krutidevText) {
             let conversionMap = {
+                // Vowels and Modifiers
                 "¼": "अ", "½": "आ", "¾": "इ", "¿": "ई", "À": "उ",
-                "Á": "ऊ", "Â": "ऋ", "Ã": "ए", "Ä": "ऐ", "Å": "ओ", "Æ": "औ"
+                "Á": "ऊ", "Â": "ऋ", "Ã": "ए", "Ä": "ऐ", "Å": "ओ",
+                "Æ": "औ", "Ç": "अं", "È": "अः", "É": "ऍ", "Ê": "ऑ",
+                "Ë": "ऒ", "Ì": "ऎ", "Í": "औ़",
+                
+                // Consonants
+                "Š": "क", "‹": "ख", "Œ": "ग", "Ž": "घ", "": "ङ",
+                "": "च", "’": "छ", "“": "ज", "”": "झ", "•": "ञ",
+                "–": "ट", "—": "ठ", "˜": "ड", "™": "ढ", "š": "ण",
+                "›": "त", "œ": "थ", "ž": "द", "Ÿ": "ध", " ": "न",
+                "¡": "प", "¢": "फ", "£": "ब", "¤": "भ", "¥": "म",
+                "¦": "य", "§": "र", "¨": "ल", "©": "व", "ª": "श",
+                "«": "ष", "¬": "स", "­": "ह", "®": "क्ष", "¯": "त्र",
+                "°": "ज्ञ",
+                
+                // Matras and Diacritics
+                "±": "ा", "³": "ि", "´": "ी", "µ": "ु", "¶": "ू",
+                "·": "ृ", "¸": "े", "¹": "ै", "º": "ो", "»": "ौ",
+                "²": "ँ", "Î": "़", "Ï": "्",
+                
+                // Punctuation and Symbols
+                "&": "्", "Û": "़", "×": "।", "Ø": "॥", "Ù": "₹",
+                
+                // Numerals
+                "0": "०", "1": "१", "2": "२", "3": "३", "4": "४",
+                "5": "५", "6": "६", "7": "७", "8": "८", "9": "९"
             };
+
             let unicodeText = "";
             for (let char of krutidevText) {
                 unicodeText += conversionMap[char] || char;
