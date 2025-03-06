@@ -3,10 +3,10 @@ from flask_cors import CORS
 import hunspell
 
 app = Flask(__name__)
-CORS(app, resources={r"/spell-check": {"origins": "*"}})
+CORS(app)  # Allow cross-origin requests
 
-# Hunspell ko Hindi dictionary ke saath initialize karo
-hindi_spell = hunspell.HunSpell('/usr/share/hunspell/hi_IN.dic', '/usr/share/hunspell/hi_IN.aff')
+# Load Hunspell dictionary
+h = hunspell.HunSpell('/usr/share/hunspell/hi_IN.dic', '/usr/share/hunspell/hi_IN.aff')
 
 @app.route("/spell-check", methods=["POST"], strict_slashes=False)
 def spell_check():
@@ -21,8 +21,8 @@ def spell_check():
         checked_words = []
 
         for word in words:
-            if not hindi_spell.spell(word):  # Agar galat word hai
-                suggestions = hindi_spell.suggest(word)
+            if not h.spell(word):  # If word is incorrect
+                suggestions = h.suggest(word)
                 checked_words.append({
                     "word": word,
                     "correct": False,
@@ -40,7 +40,6 @@ def spell_check():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=8000, debug=True)
