@@ -23,17 +23,28 @@
     <div id="spellCheckedText" contenteditable="true"></div>
 
     <script>
-        function checkSpelling() {
+        async function checkSpelling() {
             let text = document.getElementById("unicodeText").value;
-
-            // Dummy spell checker (Actual backend me hoga)
-            let wrongWords = ["गलती", "शब्द"];
-            let words = text.split(" ");
-            let highlightedText = words.map(word => 
-                wrongWords.includes(word) ? `<span class="highlight" contenteditable="true" oninput="convertKrutidev(this)">${word}</span>` : word
-            ).join(" ");
+            let apiUrl = "https://practice-production-e8b9.up.railway.app/spell-check"; // Backend API URL
             
-            document.getElementById("spellCheckedText").innerHTML = highlightedText;
+            let response = await fetch(apiUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ text: text })
+            });
+
+            let result = await response.json();
+            let checkedText = result.checkedText.map(wordObj => {
+                if (!wordObj.correct) {
+                    return `<span class="highlight" contenteditable="true" oninput="convertKrutidev(this)">${wordObj.word}</span>`;
+                } else {
+                    return wordObj.word;
+                }
+            }).join(" ");
+
+            document.getElementById("spellCheckedText").innerHTML = checkedText;
         }
 
         function convertKrutidev(span) {
