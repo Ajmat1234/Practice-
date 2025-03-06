@@ -1,4 +1,5 @@
 flask
 flask-cors
 gunicorn
-pyspellchecker
+indic-nlp-library
+indic-nlp-resources
