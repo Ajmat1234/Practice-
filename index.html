@@ -3,49 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Krutidev to Mangal Converter</title>
+    <title>Hindi Spell Checker</title>
     <style>
         body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
         textarea { width: 80%; height: 150px; margin: 10px 0; font-size: 18px; }
         button { padding: 10px; font-size: 16px; cursor: pointer; }
         #output { font-size: 18px; color: blue; margin-top: 10px; }
+        .highlight { color: red; font-weight: bold; cursor: pointer; }
     </style>
 </head>
 <body>
 
-    <h2>Krutidev to Mangal (Unicode) Converter</h2>
+    <h2>Hindi Spell Checker (Mangal to Krutidev Input)</h2>
     
-    <textarea id="krutidevText" placeholder="Krutidev font me likho..."></textarea><br>
-    <button onclick="convertText()">Convert</button>
+    <textarea id="unicodeText" placeholder="Mangal (Unicode) text paste karo..."></textarea><br>
+    <button onclick="checkSpelling()">Check Spelling</button>
     
-    <h3>Converted Unicode (Mangal) Text:</h3>
-    <textarea id="unicodeText" readonly></textarea><br>
-    <button onclick="copyText()">Copy Unicode Text</button>
+    <h3>Spell Checked Text:</h3>
+    <div id="spellCheckedText"></div>
 
     <script>
-        function convertText() {
-            let krutidevText = document.getElementById("krutidevText").value;
+        function checkSpelling() {
+            let text = document.getElementById("unicodeText").value;
 
-            // Simple Krutidev to Unicode Mapping (Ye library se replace hoga)
+            // Dummy spell checker (Actual backend call hoga)
+            let wrongWords = ["गलती", "शब्द"]; // Example wrong words
+            let words = text.split(" ");
+            let highlightedText = words.map(word => 
+                wrongWords.includes(word) ? `<span class="highlight" onclick="editWord(this)">${word}</span>` : word
+            ).join(" ");
+            
+            document.getElementById("spellCheckedText").innerHTML = highlightedText;
+        }
+
+        function editWord(span) {
+            let oldText = span.innerText;
+            let newText = prompt("Krutidev me sahi shabd likho:", oldText);
+            if (newText) {
+                span.innerText = convertToUnicode(newText);
+            }
+        }
+
+        function convertToUnicode(krutidevText) {
             let conversionMap = {
-                "¼": "अ", "½": "आ", "¾": "इ", "¿": "ई", "À": "उ", "Á": "ऊ",
-                "Â": "ऋ", "Ã": "ए", "Ä": "ऐ", "Å": "ओ", "Æ": "औ"
-                // NOTE: Yahaan complete mapping ki zarurat hogi
+                "¼": "अ", "½": "आ", "¾": "इ", "¿": "ई", "À": "उ",
+                "Á": "ऊ", "Â": "ऋ", "Ã": "ए", "Ä": "ऐ", "Å": "ओ", "Æ": "औ"
             };
-
             let unicodeText = "";
             for (let char of krutidevText) {
                 unicodeText += conversionMap[char] || char;
             }
-
-            document.getElementById("unicodeText").value = unicodeText;
-        }
-
-        function copyText() {
-            let text = document.getElementById("unicodeText");
-            text.select();
-            document.execCommand("copy");
-            alert("Converted text copied!");
+            return unicodeText;
         }
     </script>
 
