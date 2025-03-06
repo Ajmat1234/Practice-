@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Krutidev to Mangal Converter</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+        textarea { width: 80%; height: 150px; margin: 10px 0; font-size: 18px; }
+        button { padding: 10px; font-size: 16px; cursor: pointer; }
+        #output { font-size: 18px; color: blue; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <h2>Krutidev to Mangal (Unicode) Converter</h2>
+    
+    <textarea id="krutidevText" placeholder="Krutidev font me likho..."></textarea><br>
+    <button onclick="convertText()">Convert</button>
+    
+    <h3>Converted Unicode (Mangal) Text:</h3>
+    <textarea id="unicodeText" readonly></textarea><br>
+    <button onclick="copyText()">Copy Unicode Text</button>
+
+    <script>
+        function convertText() {
+            let krutidevText = document.getElementById("krutidevText").value;
+
+            // Simple Krutidev to Unicode Mapping (Ye library se replace hoga)
+            let conversionMap = {
+                "¼": "अ", "½": "आ", "¾": "इ", "¿": "ई", "À": "उ", "Á": "ऊ",
+                "Â": "ऋ", "Ã": "ए", "Ä": "ऐ", "Å": "ओ", "Æ": "औ"
+                // NOTE: Yahaan complete mapping ki zarurat hogi
+            };
+
+            let unicodeText = "";
+            for (let char of krutidevText) {
+                unicodeText += conversionMap[char] || char;
+            }
+
+            document.getElementById("unicodeText").value = unicodeText;
+        }
+
+        function copyText() {
+            let text = document.getElementById("unicodeText");
+            text.select();
+            document.execCommand("copy");
+            alert("Converted text copied!");
+        }
+    </script>
+
+</body>
+</html>
