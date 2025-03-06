@@ -2,34 +2,50 @@ import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from indicnlp.tokenize import indic_tokenize
-from hindi_spellchecker import correct_sentence  # Hindi Spell Checker
+from spellchecker import SpellChecker
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # CORS enable करने के लिए
 
-# Indic NLP resources ka path set karo
+# Indic NLP Resources का पाथ सेट करें
 INDIC_RESOURCES_PATH = os.environ.get("INDIC_RESOURCES_PATH", "./indic_nlp_resources")
 os.environ["INDIC_RESOURCES_PATH"] = INDIC_RESOURCES_PATH
 
-@app.route("/spell-check", methods=["POST"])
+# हिंदी स्पेल चेकर इनिशियलाइज़ करें
+hindi_spell = SpellChecker(language=None)  # Disable default dictionary
+hindi_spell.word_frequency.load_text_file('./hindi_dictionary.txt')  # अपनी हिंदी डिक्शनरी
+
+@app.route('/spell-check', methods=['POST'])
 def spell_check():
-    data = request.get_json()
-    text = data.get("text", "")
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        
+        if not text:
+            return jsonify({"error": "टेक्स्ट नहीं मिला"}), 400
 
-    if not text:
-        return jsonify({"error": "Text is empty"}), 400
+        # टोकनाइज़ेशन
+        words = indic_tokenize.trivial_tokenize(text)
+        
+        # स्पेल चेक करें
+        checked_words = []
+        for word in words:
+            # गलत शब्दों को चेक करें
+            is_correct = hindi_spell.known([word])
+            suggestions = list(hindi_spell.candidates(word))[:3]  # टॉप 3 सुझाव
+            
+            checked_words.append({
+                "word": word,
+                "correct": bool(is_correct),
+                "suggestions": suggestions
+            })
 
-    words = indic_tokenize.trivial_tokenize(text)  # Words split karna
-    corrected_text = correct_sentence(text)  # Spell checking
+        return jsonify({
+            "checkedText": checked_words
+        })
 
-    checked_words = []
-    for word in words:
-        if word in corrected_text:  # Agar word sahi hai
-            checked_words.append({"word": word, "correct": True, "suggestions": []})
-        else:  # Agar word galat hai, to correct word suggest karo
-            checked_words.append({"word": word, "correct": False, "suggestions": [corrected_text]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    return jsonify({"checkedText": checked_words})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000)
