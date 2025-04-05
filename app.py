@@ -170,7 +170,7 @@ def chat():
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
-        response = requests.post(url, json=payload, timeout=10)  # Timeout add kiya
+        response = requests.post(url, json=payload, timeout=10)
 
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
 
