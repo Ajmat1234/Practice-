@@ -85,7 +85,7 @@ def load_memory(user_id, conversation_id=None):
         data = res.json()["record"]
 
         if user_id not in data:
-            return ["JARVIS: ## स्वागत है!\nमैं आपका दोस्त JARVIS हूँ। कुछ पूछें!"]
+            return []
 
         user_data = data[user_id]
         conversations = user_data.get("conversations", [])
@@ -95,17 +95,17 @@ def load_memory(user_id, conversation_id=None):
                 if conv["id"] == conversation_id:
                     last_active = datetime.strptime(conv.get("last_active"), "%Y-%m-%dT%H:%M:%S")
                     if datetime.utcnow() - last_active > timedelta(days=6):
-                        return ["JARVIS: ## पुराना सत्र समाप्त हो गया है। नई चैट शुरू करें!"]
+                        return []
                     return conv.get("messages", [])
-            return ["JARVIS: ## सत्र नहीं मिला। नई चैट शुरू करें!"]
+            return []
         else:
             if not conversations:
-                return ["JARVIS: ## स्वागत है!\nमैं आपका दोस्त JARVIS हूँ। कुछ पूछें!"]
+                return []
             latest_conv = max(conversations, key=lambda x: datetime.strptime(x["last_active"], "%Y-%m-%dT%H:%M:%S"))
             return latest_conv.get("messages", [])
     except Exception as e:
         print("Memory Load Error:", e)
-        return ["JARVIS: ## त्रुटि हुई। कृपया बाद में प्रयास करें।"]
+        return []
 
 def save_memory(user_id, memory, conversation_id=None):
     try:
@@ -170,7 +170,7 @@ def chat():
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)  # Timeout add kiya
 
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -184,7 +184,7 @@ def chat():
             "reply": reply,
             "conversation_id": conversation_id or str(uuid.uuid4())
         }))
-        resp.set_cookie("user_id", user_id, max_age=60*60*24*30)  # 30 days
+        resp.set_cookie("user_id", user_id, max_age=60*60*24*30)
         return resp
 
     except requests.exceptions.RequestException as e:
