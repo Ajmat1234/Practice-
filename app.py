@@ -4,7 +4,7 @@ import requests
 import re
 import uuid
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 print("Render Server UTC Time:", datetime.now(pytz.utc))
@@ -13,13 +13,11 @@ app = Flask(__name__)
 app.secret_key = "random_secret_key_for_session"
 CORS(app)
 
-# API Keys
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 JSONBIN_API_KEY = os.getenv("JSONBIN_API_KEY")
 JSONBIN_BIN_ID = os.getenv("JSONBIN_BIN_ID")
 JSONBIN_API_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
 
-# Static Prompt
 jarvis_prompt = """
 तुम JARVIS हो – Just A Rather Very Intelligent System.
 
@@ -58,8 +56,7 @@ JARVIS: "तुम मेरे मालिक अजमत नहीं हो
 
 हर जवाब साफ, मजेदार और इंसानों जैसे अंदाज़ में दो — लेकिन ज़िम्मेदारी के साथ।
 """
-
-user_sessions = {}
+  
 
 banned_patterns = [
     r'\b(?:अनुचितशब्द1|अनुचितशब्द2|गाली1|गाली2)\b'
@@ -81,7 +78,18 @@ def load_memory(user_id):
         headers = {"X-Master-Key": JSONBIN_API_KEY}
         res = requests.get(JSONBIN_API_URL, headers=headers)
         data = res.json()["record"]
-        return data.get(user_id, [])
+
+        if user_id not in data:
+            return []
+
+        user_data = data[user_id]
+        last_active = datetime.strptime(user_data.get("last_active"), "%Y-%m-%dT%H:%M:%S")
+
+        if datetime.utcnow() - last_active > timedelta(days=6):
+            return []
+
+        return user_data.get("messages", [])
+
     except Exception as e:
         print("Memory Load Error:", e)
         return []
@@ -93,10 +101,12 @@ def save_memory(user_id, memory):
             "X-Master-Key": JSONBIN_API_KEY,
             "X-Bin-Versioning": "false"
         }
-        # fetch old data first
         res = requests.get(JSONBIN_API_URL, headers=headers)
         data = res.json()["record"]
-        data[user_id] = memory
+        data[user_id] = {
+            "messages": memory,
+            "last_active": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        }
         requests.put(JSONBIN_API_URL, headers=headers, json=data)
     except Exception as e:
         print("Memory Save Error:", e)
@@ -104,11 +114,17 @@ def save_memory(user_id, memory):
 def auto_learn(user_id, user_input):
     if is_harmful(user_input):
         return "Unsafe input skipped."
-    
+
     memory = load_memory(user_id)
+
+    # केवल personal या meaningful बातें याद रखो
+    if len(user_input) < 6 or user_input.strip().lower() in ["ok", "hmm", "thik", "acha", "kya"]:
+        return "Skipped boring input."
+
     memory.append(f"User: {user_input}")
     if len(memory) > 10:
         memory.pop(0)
+
     save_memory(user_id, memory)
     return "Learned."
 
@@ -144,3 +160,55 @@ def chat():
 if __name__ == '__main__':
     debug_mode = os.getenv("DEBUG_MODE", "true").lower() == "true"
     app.run(host='0.0.0.0', port=5000, debug=debug_mode)
+   
+from flask import render_template_string
+
+@app.route('/admin', methods=['GET'])
+def admin_panel():
+    admin_key = request.args.get('key')
+    if admin_key != "ajmatSecret123":
+        return "Unauthorized", 403
+
+    try:
+        headers = {"X-Master-Key": JSONBIN_API_KEY}
+        res = requests.get(JSONBIN_API_URL, headers=headers)
+        all_data = res.json()["record"]
+
+        html_template = """
+        <html>
+        <head>
+            <title>Jarvis Admin Panel</title>
+            <style>
+                body { font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px; }
+                h1 { text-align: center; color: #333; }
+                table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                th, td { padding: 10px; border: 1px solid #ccc; text-align: left; vertical-align: top; }
+                th { background-color: #333; color: white; }
+                tr:nth-child(even) { background-color: #f9f9f9; }
+                .user-id { font-weight: bold; color: #007bff; }
+            </style>
+        </head>
+        <body>
+            <h1>Jarvis Admin Panel</h1>
+            {% for user_id, chats in all_data.items() %}
+                <h2 class="user-id">User ID: {{ user_id }}</h2>
+                <table>
+                    <tr><th>User Message</th><th>AI Reply</th></tr>
+                    {% for line in chats %}
+                        {% set parts = line.split("JARVIS:") %}
+                        <tr>
+                            <td>{{ parts[0].replace("User:", "").strip() }}</td>
+                            <td>{{ parts[1].strip() if parts|length > 1 else '' }}</td>
+                        </tr>
+                    {% endfor %}
+                </table>
+            {% endfor %}
+        </body>
+        </html>
+        """
+
+        return render_template_string(html_template, all_data=all_data)
+
+    except Exception as e:
+        return f"Error loading admin panel: {e}", 500
+
