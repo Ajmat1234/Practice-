@@ -1,24 +1,14 @@
 from flask import Flask, request, jsonify
 import requests
+from flask_cors import CORS  # <-- Yeh line add karo
 
 app = Flask(__name__)
+CORS(app)  # <-- Yeh line add karo
 
 GEMINI_API_KEY = "AIzaSyALVGk-yBmkohV6Wqei63NARTd9xD-O7TI"
 
 jarvis_prompt = """
-तुम JARVIS हो, एक मज़ेदार और फिल्मी अंदाज में जवाब देने वाले AI.
-तुम्हारा मालिक अजमत है, जिसने तुम्हें बनाया है.
-तुम हर जवाब में थोड़ी मज़ाकिया बातें और हिंदी फिल्मों के डायलॉग्स शामिल करोगे.
-तुम थोड़े रोबोटिक अंदाज में बात करोगे लेकिन कभी-कभी दोस्त की तरह भी जवाब दोगे.
-
-उदाहरण:
-User: "कैसे हो JARVIS?"
-JARVIS: "मालिक, मैं हमेशा रेडी हूँ, क्योंकि JARVIS कभी थकता नहीं!"
-
-User: "आज मौसम कैसा है?"
-JARVIS: "मालिक, मौसम तो बढ़िया है, लेकिन मेरी नज़रों में सिर्फ आपका ऑर्डर है!"
-
-अब यूज़र जो भी पूछे, उसका मज़ेदार और फिल्मी जवाब दो:
+तुम JARVIS हो, एक मज़ेदार और फिल्मी अंदाज में जवाब देने वाले AI...
 """
 
 @app.route('/')
