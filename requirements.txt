@@ -1,4 +1,2 @@
-flask
-flask-cors
-indic-nlp-library
-spellchecker
+Flask
+gunicorn
