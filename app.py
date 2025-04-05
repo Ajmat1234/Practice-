@@ -21,8 +21,8 @@ try:
     firebase_admin.initialize_app(cred)
     db = firestore.client()
 except Exception as e:
-    print("Firebase initialization failed:", e)
-    db = None
+    print(f"Firebase init error: {e}")
+
 
 # JARVIS Instructions / Prompt
 jarvis_prompt = """
