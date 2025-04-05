@@ -1,5 +1,5 @@
-Flask
-gunicorn
-requests
+flask
 flask-cors
+requests
 firebase-admin
+gunicorn
