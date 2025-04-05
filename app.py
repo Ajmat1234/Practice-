@@ -78,7 +78,7 @@ def get_user_id():
     session['user_id'] = user_id
     return user_id
 
-def load_memory(user_id):
+def load_memory(user_id, conversation_id=None):
     try:
         headers = {"X-Master-Key": JSONBIN_API_KEY}
         res = requests.get(JSONBIN_API_URL, headers=headers)
@@ -88,16 +88,27 @@ def load_memory(user_id):
             return []
 
         user_data = data[user_id]
-        last_active = datetime.strptime(user_data.get("last_active"), "%Y-%m-%dT%H:%M:%S")
-        if datetime.utcnow() - last_active > timedelta(days=6):
-            return []
+        conversations = user_data.get("conversations", [])
 
-        return user_data.get("messages", [])
+        if conversation_id:
+            for conv in conversations:
+                if conv["id"] == conversation_id:
+                    last_active = datetime.strptime(conv.get("last_active"), "%Y-%m-%dT%H:%M:%S")
+                    if datetime.utcnow() - last_active > timedelta(days=6):
+                        return []
+                    return conv.get("messages", [])
+            return []  # Agar conversation_id nahi milta
+        else:
+            # Default: Sabse recent conversation
+            if conversations:
+                latest_conv = max(conversations, key=lambda x: datetime.strptime(x["last_active"], "%Y-%m-%dT%H:%M:%S"))
+                return latest_conv.get("messages", [])
+            return []
     except Exception as e:
         print("Memory Load Error:", e)
         return []
 
-def save_memory(user_id, memory):
+def save_memory(user_id, memory, conversation_id=None):
     try:
         headers = {
             "Content-Type": "application/json",
@@ -106,10 +117,33 @@ def save_memory(user_id, memory):
         }
         res = requests.get(JSONBIN_API_URL, headers=headers)
         data = res.json()["record"]
-        data[user_id] = {
-            "messages": memory,
-            "last_active": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-        }
+
+        if user_id not in data:
+            data[user_id] = {"conversations": []}
+
+        user_data = data[user_id]
+        conversations = user_data["conversations"]
+
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())  # Naya conversation ID
+            conversations.append({
+                "id": conversation_id,
+                "messages": memory,
+                "last_active": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+            })
+        else:
+            for conv in conversations:
+                if conv["id"] == conversation_id:
+                    conv["messages"] = memory
+                    conv["last_active"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+                    break
+            else:
+                conversations.append({
+                    "id": conversation_id,
+                    "messages": memory,
+                    "last_active": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+                })
+
         requests.put(JSONBIN_API_URL, headers=headers, json=data)
     except Exception as e:
         print("Memory Save Error:", e)
@@ -123,7 +157,8 @@ def chat():
     try:
         user_input = request.json.get("message")
         user_id = get_user_id()
-        memory = load_memory(user_id)
+        conversation_id = request.json.get("conversation_id")  # Frontend se aayega
+        memory = load_memory(user_id, conversation_id)
 
         if not is_harmful(user_input):
             memory.append(f"User: {user_input}")
@@ -141,9 +176,12 @@ def chat():
         if len(memory) > 20:
             memory = memory[-20:]
 
-        save_memory(user_id, memory)
+        save_memory(user_id, memory, conversation_id)
 
-        resp = make_response(jsonify({"reply": reply}))
+        resp = make_response(jsonify({
+            "reply": reply,
+            "conversation_id": conversation_id or str(uuid.uuid4())  # Agar naya hai to generate
+        }))
         resp.set_cookie("user_id", user_id, max_age=60*60*24*30)  # 30 days
         return resp
 
@@ -169,24 +207,28 @@ def admin_panel():
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { padding: 10px; border: 1px solid #ccc; text-align: left; }
         th { background-color: #333; color: white; }
-        .user-id { color: #007bff; margin-top: 30px; }</style></head>
+        .user-id { color: #007bff; margin-top: 30px; }
+        .conversation-id { color: #28a745; margin-left: 10px; }</style></head>
         <body><h1>Jarvis Admin Panel</h1>
         {% for user_id, data in all_data.items() %}
             <h2 class="user-id">User ID: {{ user_id }}</h2>
-            <table><tr><th>User</th><th>AI</th></tr>
-            {% for line in data.messages %}
-                {% if "User:" in line %}
-                    {% set user = line.replace("User:", "").strip() %}
-                    {% set ai = data.messages[loop.index] if loop.index < data.messages|length else '' %}
-                    {% if "JARVIS:" in ai %}
-                        {% set ai = ai.replace("JARVIS:", "").strip() %}
-                    {% else %}
-                        {% set ai = '' %}
+            {% for conv in data.conversations %}
+                <h3 class="conversation-id">Conversation ID: {{ conv.id }}</h3>
+                <table><tr><th>User</th><th>AI</th></tr>
+                {% for line in conv.messages %}
+                    {% if "User:" in line %}
+                        {% set user = line.replace("User:", "").strip() %}
+                        {% set ai = conv.messages[loop.index] if loop.index < conv.messages|length else '' %}
+                        {% if "JARVIS:" in ai %}
+                            {% set ai = ai.replace("JARVIS:", "").strip() %}
+                        {% else %}
+                            {% set ai = '' %}
+                        {% endif %}
+                        <tr><td>{{ user }}</td><td>{{ ai }}</td></tr>
                     {% endif %}
-                    <tr><td>{{ user }}</td><td>{{ ai }}</td></tr>
-                {% endif %}
+                {% endfor %}
+                </table>
             {% endfor %}
-            </table>
         {% endfor %}
         </body></html>
         """
