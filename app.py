@@ -6,6 +6,10 @@ import uuid
 import os
 import firebase_admin
 from firebase_admin import credentials, firestore
+from datetime import datetime
+import pytz
+
+print("Render Server UTC Time:", datetime.now(pytz.utc))
 
 app = Flask(__name__)
 app.secret_key = "random_secret_key_for_session"  # यूज़र की session मेमोरी के लिए
