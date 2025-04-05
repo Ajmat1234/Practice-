@@ -85,7 +85,7 @@ def load_memory(user_id, conversation_id=None):
         data = res.json()["record"]
 
         if user_id not in data:
-            return []
+            return ["JARVIS: ## स्वागत है!\nमैं आपका दोस्त JARVIS हूँ। कुछ पूछें!"]
 
         user_data = data[user_id]
         conversations = user_data.get("conversations", [])
@@ -95,18 +95,17 @@ def load_memory(user_id, conversation_id=None):
                 if conv["id"] == conversation_id:
                     last_active = datetime.strptime(conv.get("last_active"), "%Y-%m-%dT%H:%M:%S")
                     if datetime.utcnow() - last_active > timedelta(days=6):
-                        return []
+                        return ["JARVIS: ## पुराना सत्र समाप्त हो गया है। नई चैट शुरू करें!"]
                     return conv.get("messages", [])
-            return []  # Agar conversation_id nahi milta
+            return ["JARVIS: ## सत्र नहीं मिला। नई चैट शुरू करें!"]
         else:
-            # Default: Sabse recent conversation
-            if conversations:
-                latest_conv = max(conversations, key=lambda x: datetime.strptime(x["last_active"], "%Y-%m-%dT%H:%M:%S"))
-                return latest_conv.get("messages", [])
-            return []
+            if not conversations:
+                return ["JARVIS: ## स्वागत है!\nमैं आपका दोस्त JARVIS हूँ। कुछ पूछें!"]
+            latest_conv = max(conversations, key=lambda x: datetime.strptime(x["last_active"], "%Y-%m-%dT%H:%M:%S"))
+            return latest_conv.get("messages", [])
     except Exception as e:
         print("Memory Load Error:", e)
-        return []
+        return ["JARVIS: ## त्रुटि हुई। कृपया बाद में प्रयास करें।"]
 
 def save_memory(user_id, memory, conversation_id=None):
     try:
@@ -125,7 +124,7 @@ def save_memory(user_id, memory, conversation_id=None):
         conversations = user_data["conversations"]
 
         if not conversation_id:
-            conversation_id = str(uuid.uuid4())  # Naya conversation ID
+            conversation_id = str(uuid.uuid4())
             conversations.append({
                 "id": conversation_id,
                 "messages": memory,
@@ -157,10 +156,13 @@ def chat():
     try:
         user_input = request.json.get("message")
         user_id = get_user_id()
-        conversation_id = request.json.get("conversation_id")  # Frontend se aayega
+        conversation_id = request.json.get("conversation_id")
         memory = load_memory(user_id, conversation_id)
 
-        if not is_harmful(user_input):
+        if not user_input and not conversation_id:
+            return jsonify({"reply": "कृपया एक संदेश भेजें या conversation ID प्रदान करें।", "conversation_id": conversation_id}), 400
+
+        if user_input and not is_harmful(user_input):
             memory.append(f"User: {user_input}")
 
         memory_context = "\n".join(memory)
@@ -180,14 +182,31 @@ def chat():
 
         resp = make_response(jsonify({
             "reply": reply,
-            "conversation_id": conversation_id or str(uuid.uuid4())  # Agar naya hai to generate
+            "conversation_id": conversation_id or str(uuid.uuid4())
         }))
         resp.set_cookie("user_id", user_id, max_age=60*60*24*30)  # 30 days
         return resp
 
+    except requests.exceptions.RequestException as e:
+        print("API Error:", e)
+        return jsonify({"reply": "API से कनेक्शन में समस्या हुई।", "conversation_id": conversation_id}), 503
     except Exception as e:
         print("Chat Error:", e)
-        return jsonify({"reply": "माफ़ करना, कुछ गड़बड़ हो गई है। थोड़ी देर बाद फिर कोशिश करो।"}), 500
+        return jsonify({"reply": "माफ़ करें, कुछ गड़बड़ हो गई है।", "conversation_id": conversation_id}), 500
+
+@app.route('/get_conversations', methods=['GET'])
+def get_conversations():
+    user_id = request.cookies.get("user_id")
+    try:
+        headers = {"X-Master-Key": JSONBIN_API_KEY}
+        res = requests.get(JSONBIN_API_URL, headers=headers)
+        data = res.json()["record"]
+        if user_id in data:
+            return jsonify({"conversations": data[user_id]["conversations"]})
+        return jsonify({"conversations": []})
+    except Exception as e:
+        print("Get Conversations Error:", e)
+        return jsonify({"conversations": []}), 500
 
 @app.route('/admin', methods=['GET'])
 def admin_panel():
