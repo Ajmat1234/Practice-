@@ -37,7 +37,7 @@ jarvis_prompt = """
 
 5. किसी भी हाल में झूठ या असभ्य व्यवहार नहीं।
 
-6. अपने जवाबों को Markdown फॉर्मेट में दो, ताकि headings, bold text, और italic text सही से दिखें।
+6. अपने जवाबों को Markdown फॉर्मेट में दो, ताकि headings, **bold text**, और *italic text* सही से दिखें।
 """
 
 banned_patterns = [
@@ -60,19 +60,16 @@ def get_user_id():
 def load_memory(user_id):
     try:
         headers = {"X-Master-Key": JSONBIN_API_KEY}
-        res = requests.get(JSONBIN_API_URL, headers=headers)
+        res = requests.get(JSONBIN_API_URL, headers=headers, timeout=5)
         data = res.json().get("record", {})
-
         user_data = data.get(user_id)
         if not user_data:
             return []
-
         last_active_str = user_data.get("last_active")
         if last_active_str:
             last_active = datetime.strptime(last_active_str, "%Y-%m-%dT%H:%M:%S")
             if datetime.utcnow() - last_active > timedelta(days=6):
                 return []
-
         return user_data.get("messages", [])
     except Exception as e:
         print("Memory Load Error:", e)
@@ -85,21 +82,19 @@ def save_memory(user_id, memory):
             "X-Master-Key": JSONBIN_API_KEY,
             "X-Bin-Versioning": "false"
         }
-        # Get existing data
-        res = requests.get(JSONBIN_API_URL, headers=headers)
+        # Load existing data from JSONBin
+        res = requests.get(JSONBIN_API_URL, headers=headers, timeout=5)
         if res.status_code != 200:
             print("Failed to load existing bin.")
             return
         data = res.json().get("record", {})
-
         # Update user's memory
         data[user_id] = {
             "messages": memory,
             "last_active": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         }
-
         # Save back updated data
-        requests.put(JSONBIN_API_URL, headers=headers, json={"record": data})
+        requests.put(JSONBIN_API_URL, headers=headers, json={"record": data}, timeout=5)
     except Exception as e:
         print("Memory Save Error:", e)
 
@@ -112,29 +107,34 @@ def chat():
     try:
         user_input = request.json.get("message")
         user_id = get_user_id()
-        memory = load_memory(user_id)
-
+        # पहले session में memory देखें, नहीं तो JSONBin से लोड करें
+        if 'memory' in session:
+            memory = session['memory']
+        else:
+            memory = load_memory(user_id)
+        
         if not is_harmful(user_input):
             memory.append(f"User: {user_input}")
-
+        
         memory_context = "\n".join(memory)
         full_prompt = f"{jarvis_prompt}\n{memory_context}\nUser: \"{user_input}\"\nJARVIS:"
-
+        
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-
+        
         memory.append(f"JARVIS: {reply}")
+        # केवल आख़िरी 20 messages रखें
         if len(memory) > 20:
             memory = memory[-20:]
-
+        
+        session['memory'] = memory
         save_memory(user_id, memory)
-
+        
         resp = make_response(jsonify({"reply": reply}))
         resp.set_cookie("user_id", user_id, max_age=60*60*24*30)
         return resp
-
     except Exception as e:
         print("Chat Error:", e)
         return jsonify({"reply": "माफ़ करना, कुछ गड़बड़ हो गई है। थोड़ी देर बाद फिर कोशिश करो।"}), 500
@@ -147,40 +147,53 @@ def admin_panel():
 
     try:
         headers = {"X-Master-Key": JSONBIN_API_KEY}
-        res = requests.get(JSONBIN_API_URL, headers=headers)
+        res = requests.get(JSONBIN_API_URL, headers=headers, timeout=5)
         all_data = res.json()["record"]
 
         html_template = """
-        <html><head><title>Jarvis Admin Panel</title>
-        <style>body { font-family: Arial; background: #f5f5f5; padding: 20px; }
-        h1 { text-align: center; color: #333; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { padding: 10px; border: 1px solid #ccc; text-align: left; }
-        th { background-color: #333; color: white; }
-        .user-id { color: #007bff; margin-top: 30px; }</style></head>
-        <body><h1>Jarvis Admin Panel</h1>
-        {% for user_id, data in all_data.items() %}
-            <h2 class="user-id">User ID: {{ user_id }}</h2>
-            <table><tr><th>User</th><th>AI</th></tr>
-            {% for line in data.messages %}
-                {% if "User:" in line %}
-                    {% set user = line.replace("User:", "").strip() %}
-                    {% set ai = data.messages[loop.index] if loop.index < data.messages|length else '' %}
-                    {% if "JARVIS:" in ai %}
-                        {% set ai = ai.replace("JARVIS:", "").strip() %}
-                    {% else %}
-                        {% set ai = '' %}
-                    {% endif %}
-                    <tr><td>{{ user }}</td><td>{{ ai }}</td></tr>
-                {% endif %}
+        <html>
+        <head>
+            <title>Jarvis Admin Panel</title>
+            <style>
+                body { font-family: Arial; background: #f5f5f5; padding: 20px; }
+                h1 { text-align: center; color: #333; }
+                table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                th, td { padding: 10px; border: 1px solid #ccc; text-align: left; }
+                th { background-color: #333; color: white; }
+                .user-id { color: #007bff; margin-top: 30px; }
+            </style>
+        </head>
+        <body>
+            <h1>Jarvis Admin Panel</h1>
+            {% for user_id, data in all_data.items() %}
+                <h2 class="user-id">User ID: {{ user_id }}</h2>
+                <table>
+                    <tr>
+                        <th>User</th>
+                        <th>AI</th>
+                    </tr>
+                    {% for line in data.messages %}
+                        {% if "User:" in line %}
+                            {% set user_line = line.replace("User:", "").strip() %}
+                            {% set ai_line = data.messages[loop.index] if loop.index < data.messages|length else '' %}
+                            {% if "JARVIS:" in ai_line %}
+                                {% set ai_line = ai_line.replace("JARVIS:", "").strip() %}
+                            {% else %}
+                                {% set ai_line = '' %}
+                            {% endif %}
+                            <tr>
+                                <td>{{ user_line }}</td>
+                                <td>{{ ai_line }}</td>
+                            </tr>
+                        {% endif %}
+                    {% endfor %}
+                </table>
             {% endfor %}
-            </table>
-        {% endfor %}
-        </body></html>
+        </body>
+        </html>
         """
 
         return render_template_string(html_template, all_data=all_data)
-
     except Exception as e:
         return f"Error loading admin panel: {e}", 500
 
