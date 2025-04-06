@@ -2,5 +2,3 @@ Flask
 flask-cors
 requests
 gunicorn
-pytz
-google-auth
