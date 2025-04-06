@@ -1,19 +1,21 @@
-import os
-import re
-import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session, make_response, render_template_string
 from flask_cors import CORS
 import requests
+import re
+import uuid
+import os
+from datetime import datetime, timedelta
+import pytz
 
 app = Flask(__name__)
+app.secret_key = "random_secret_key_for_session"
 CORS(app)
 
-# Environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 JSONBIN_API_KEY = os.getenv("JSONBIN_API_KEY")
-GLOBAL_BIN_ID = os.getenv("GLOBAL_BIN_ID")  # Set this in your environment
+JSONBIN_BIN_ID = os.getenv("JSONBIN_BIN_ID")
+JSONBIN_API_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
 
-# JARVIS prompt
 jarvis_prompt = """
 तुम JARVIS हो – Just A Rather Very Intelligent System.
 
@@ -36,7 +38,27 @@ jarvis_prompt = """
 
 5. किसी भी हाल में झूठ या असभ्य व्यवहार नहीं।
 
-6. अपने जवाबों को Markdown फॉर्मेट में दो, ताकि headings, **Bold** text, और *Italic* text सही से दिखें।
+6. अपने जवाबों को Markdown फॉर्मेट में दो, ताकि headings, bold text, और italic text सही से दिखें। उदाहरण के लिए:
+   - ## Heading
+   - ### Subheading
+   - **Bold**
+   - *Italic*
+
+---
+
+Examples:
+User: "भारत के प्रधानमंत्री कौन हैं?"
+JARVIS: "## भारत के प्रधानमंत्री\nभारत के वर्तमान प्रधानमंत्री **श्री नरेंद्र मोदी** हैं।"
+
+User: "मैं बहुत अकेला महसूस करता हूँ"
+JARVIS: "### अकेलापन\nअकेलापन गहरा हो सकता है, लेकिन मैं यहीं हूँ, तुम्हारे साथ। *हर सवाल के जवाब के लिए — दिल से।*"
+
+User: "मैं अजमत हूँ"
+JARVIS: "## अजमत का दावा\nतुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"
+
+---
+
+हर जवाब साफ, मजेदार और इंसानों जैसे अंदाज़ में दो — लेकिन ज़िम्मेदारी के साथ।
 """
 
 banned_patterns = [
@@ -49,60 +71,131 @@ def is_harmful(text):
             return True
     return False
 
-def get_global_bin():
-    headers = {"X-Master-Key": JSONBIN_API_KEY}
-    url = f"https://api.jsonbin.io/v3/b/{GLOBAL_BIN_ID}"
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()["record"]
+def get_user_id():
+    user_id = request.cookies.get("user_id")
+    if not user_id:
+        user_id = str(uuid.uuid4())
+    session['user_id'] = user_id
+    return user_id
 
-def update_global_bin(data):
-    headers = {
-        "Content-Type": "application/json",
-        "X-Master-Key": JSONBIN_API_KEY
-    }
-    url = f"https://api.jsonbin.io/v3/b/{GLOBAL_BIN_ID}"
-    response = requests.put(url, headers=headers, json=data)
-    response.raise_for_status()
+def load_memory(user_id):
+    try:
+        headers = {"X-Master-Key": JSONBIN_API_KEY}
+        res = requests.get(JSONBIN_API_URL, headers=headers)
+        data = res.json()["record"]
+
+        if user_id not in data:
+            return []
+
+        user_data = data[user_id]
+        last_active = datetime.strptime(user_data.get("last_active"), "%Y-%m-%dT%H:%M:%S")
+        if datetime.utcnow() - last_active > timedelta(days=6):
+            return []
+
+        return user_data.get("messages", [])
+    except Exception as e:
+        print("Memory Load Error:", e)
+        return []
+
+def save_memory(user_id, memory):
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "X-Master-Key": JSONBIN_API_KEY,
+            "X-Bin-Versioning": "false"
+        }
+        res = requests.get(JSONBIN_API_URL, headers=headers)
+        data = res.json()["record"]
+        data[user_id] = {
+            "messages": memory,
+            "last_active": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        }
+        requests.put(JSONBIN_API_URL, headers=headers, json=data)
+    except Exception as e:
+        print("Memory Save Error:", e)
 
 @app.route('/')
-def index():
-    return "Welcome to JARVIS Chat API!"
+def home():
+    return 'JARVIS backend is running!'
 
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
-        user_input = request.json.get("message", "")
-        if is_harmful(user_input):
-            return jsonify({"reply": "क्षमा करें, आपका संदेश अनुचित है।"}), 400
+        user_input = request.json.get("message")
+        user_id = get_user_id()
+        memory = load_memory(user_id)
 
-        # Load global chat history
-        global_data = get_global_bin()
-        memory = global_data.get("messages", [])
+        if not is_harmful(user_input):
+            memory.append(f"User: {user_input}")
 
-        memory.append(f"User: {user_input}")
         memory_context = "\n".join(memory)
         full_prompt = f"{jarvis_prompt}\n{memory_context}\nUser: \"{user_input}\"\nJARVIS:"
 
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
-        response = requests.post(gemini_url, json=payload, timeout=10)
-        response.raise_for_status()
-        reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-        memory.append(f"JARVIS: {reply}")
+        response = requests.post(url, json=payload)
 
-        # Keep only last 20 messages
+        reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+        memory.append(f"JARVIS: {reply}")
         if len(memory) > 20:
             memory = memory[-20:]
 
-        # Update global bin
-        global_data["messages"] = memory
-        update_global_bin(global_data)
+        save_memory(user_id, memory)
 
-        return jsonify({"reply": reply})
+        resp = make_response(jsonify({"reply": reply}))
+        resp.set_cookie("user_id", user_id, max_age=60*60*24*30)  # 30 days
+        return resp
+
     except Exception as e:
         print("Chat Error:", e)
-        return jsonify({"reply": "माफ़ करें, कुछ गड़बड़ हो गई है।"}), 500
+        return jsonify({"reply": "माफ़ करना, कुछ गड़बड़ हो गई है। थोड़ी देर बाद फिर कोशिश करो।"}), 500
+
+@app.route('/admin', methods=['GET'])
+def admin_panel():
+    admin_key = request.args.get('key')
+    if admin_key != "ajmatSecret123":
+        return "Unauthorized", 403
+
+    try:
+        headers = {"X-Master-Key": JSONBIN_API_KEY}
+        res = requests.get(JSONBIN_API_URL, headers=headers)
+        all_data = res.json()["record"]
+
+        html_template = """
+        <html><head><title>Jarvis Admin Panel</title>
+        <style>body { font-family: Arial; background: #f5f5f5; padding: 20px; }
+        h1 { text-align: center; color: #333; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; border: 1px solid #ccc; text-align: left; }
+        th { background-color: #333; color: white; }
+        .user-id { color: #007bff; margin-top: 30px; }</style></head>
+        <body><h1>Jarvis Admin Panel</h1>
+        {% for user_id, data in all_data.items() %}
+            <h2 class="user-id">User ID: {{ user_id }}</h2>
+            <table><tr><th>User</th><th>AI</th></tr>
+            {% for line in data.messages %}
+                {% if "User:" in line %}
+                    {% set user = line.replace("User:", "").strip() %}
+                    {% set ai = data.messages[loop.index] if loop.index < data.messages|length else '' %}
+                    {% if "JARVIS:" in ai %}
+                        {% set ai = ai.replace("JARVIS:", "").strip() %}
+                    {% else %}
+                        {% set ai = '' %}
+                    {% endif %}
+                    <tr><td>{{ user }}</td><td>{{ ai }}</td></tr>
+                {% endif %}
+            {% endfor %}
+            </table>
+        {% endfor %}
+        </body></html>
+        """
+
+        return render_template_string(html_template, all_data=all_data)
+
+    except Exception as e:
+        return f"Error loading admin panel: {e}", 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    debug_mode = os.getenv("DEBUG_MODE", "true").lower() == "true"
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
