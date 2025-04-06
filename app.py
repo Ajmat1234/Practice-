@@ -5,7 +5,6 @@ import re
 import uuid
 import os
 from datetime import datetime, timedelta
-import pytz
 
 app = Flask(__name__)
 app.secret_key = "random_secret_key_for_session"
@@ -144,8 +143,10 @@ def save_memory(user_id, memory, conversation_id=None):
                 })
 
         requests.put(JSONBIN_API_URL, headers=headers, json=data)
+        return conversation_id
     except Exception as e:
         print("Memory Save Error:", e)
+        return conversation_id
 
 @app.route('/')
 def home():
@@ -154,15 +155,18 @@ def home():
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
-        user_input = request.json.get("message")
+        user_input = request.json.get("message", "")
         user_id = get_user_id()
         conversation_id = request.json.get("conversation_id")
         memory = load_memory(user_id, conversation_id)
 
-        if not user_input and not conversation_id:
-            return jsonify({"reply": "कृपया एक संदेश भेजें या conversation ID प्रदान करें।", "conversation_id": conversation_id}), 400
+        if not user_input and conversation_id:
+            return jsonify({"reply": "\n".join(memory), "conversation_id": conversation_id})
 
-        if user_input and not is_harmful(user_input):
+        if user_input and is_harmful(user_input):
+            return jsonify({"reply": "क्षमा करें, आपका संदेश अनुचित है।", "conversation_id": conversation_id}), 400
+
+        if user_input:
             memory.append(f"User: {user_input}")
 
         memory_context = "\n".join(memory)
@@ -173,16 +177,15 @@ def chat():
         response = requests.post(url, json=payload, timeout=10)
 
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-
         memory.append(f"JARVIS: {reply}")
         if len(memory) > 20:
             memory = memory[-20:]
 
-        save_memory(user_id, memory, conversation_id)
+        conversation_id = save_memory(user_id, memory, conversation_id)
 
         resp = make_response(jsonify({
             "reply": reply,
-            "conversation_id": conversation_id or str(uuid.uuid4())
+            "conversation_id": conversation_id
         }))
         resp.set_cookie("user_id", user_id, max_age=60*60*24*30)
         return resp
@@ -197,6 +200,8 @@ def chat():
 @app.route('/get_conversations', methods=['GET'])
 def get_conversations():
     user_id = request.cookies.get("user_id")
+    if not user_id:
+        return jsonify({"conversations": []})
     try:
         headers = {"X-Master-Key": JSONBIN_API_KEY}
         res = requests.get(JSONBIN_API_URL, headers=headers)
