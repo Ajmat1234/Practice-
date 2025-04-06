@@ -5,15 +5,14 @@ import re
 import uuid
 import os
 from datetime import datetime, timedelta
-import pytz
 
 app = Flask(__name__)
 app.secret_key = "random_secret_key_for_session"
 CORS(app)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-JSONBIN_API_KEY = os.getenv("JSONBIN_API_KEY")
-JSONBIN_BIN_ID = os.getenv("JSONBIN_BIN_ID")
+JSONBIN_API_KEY = "$2a$10$BihfqUMdrS8OpkmlKy/GpekTBIWkgUJVgh2az/NnDe22I18YvnHKG"
+JSONBIN_BIN_ID = "67f1876d8561e97a50f95116"
 JSONBIN_API_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
 
 jarvis_prompt = """
@@ -38,27 +37,7 @@ jarvis_prompt = """
 
 5. किसी भी हाल में झूठ या असभ्य व्यवहार नहीं।
 
-6. अपने जवाबों को Markdown फॉर्मेट में दो, ताकि headings, bold text, और italic text सही से दिखें। उदाहरण के लिए:
-   - ## Heading
-   - ### Subheading
-   - **Bold**
-   - *Italic*
-
----
-
-Examples:
-User: "भारत के प्रधानमंत्री कौन हैं?"
-JARVIS: "## भारत के प्रधानमंत्री\nभारत के वर्तमान प्रधानमंत्री **श्री नरेंद्र मोदी** हैं।"
-
-User: "मैं बहुत अकेला महसूस करता हूँ"
-JARVIS: "### अकेलापन\nअकेलापन गहरा हो सकता है, लेकिन मैं यहीं हूँ, तुम्हारे साथ। *हर सवाल के जवाब के लिए — दिल से।*"
-
-User: "मैं अजमत हूँ"
-JARVIS: "## अजमत का दावा\nतुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"
-
----
-
-हर जवाब साफ, मजेदार और इंसानों जैसे अंदाज़ में दो — लेकिन ज़िम्मेदारी के साथ।
+6. अपने जवाबों को Markdown फॉर्मेट में दो, ताकि headings, bold text, और italic text सही से दिखें।
 """
 
 banned_patterns = [
@@ -82,15 +61,17 @@ def load_memory(user_id):
     try:
         headers = {"X-Master-Key": JSONBIN_API_KEY}
         res = requests.get(JSONBIN_API_URL, headers=headers)
-        data = res.json()["record"]
+        data = res.json().get("record", {})
 
-        if user_id not in data:
+        user_data = data.get(user_id)
+        if not user_data:
             return []
 
-        user_data = data[user_id]
-        last_active = datetime.strptime(user_data.get("last_active"), "%Y-%m-%dT%H:%M:%S")
-        if datetime.utcnow() - last_active > timedelta(days=6):
-            return []
+        last_active_str = user_data.get("last_active")
+        if last_active_str:
+            last_active = datetime.strptime(last_active_str, "%Y-%m-%dT%H:%M:%S")
+            if datetime.utcnow() - last_active > timedelta(days=6):
+                return []
 
         return user_data.get("messages", [])
     except Exception as e:
@@ -104,13 +85,21 @@ def save_memory(user_id, memory):
             "X-Master-Key": JSONBIN_API_KEY,
             "X-Bin-Versioning": "false"
         }
+        # Get existing data
         res = requests.get(JSONBIN_API_URL, headers=headers)
-        data = res.json()["record"]
+        if res.status_code != 200:
+            print("Failed to load existing bin.")
+            return
+        data = res.json().get("record", {})
+
+        # Update user's memory
         data[user_id] = {
             "messages": memory,
             "last_active": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         }
-        requests.put(JSONBIN_API_URL, headers=headers, json=data)
+
+        # Save back updated data
+        requests.put(JSONBIN_API_URL, headers=headers, json={"record": data})
     except Exception as e:
         print("Memory Save Error:", e)
 
@@ -134,7 +123,6 @@ def chat():
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
         response = requests.post(url, json=payload)
-
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
 
         memory.append(f"JARVIS: {reply}")
@@ -144,7 +132,7 @@ def chat():
         save_memory(user_id, memory)
 
         resp = make_response(jsonify({"reply": reply}))
-        resp.set_cookie("user_id", user_id, max_age=60*60*24*30)  # 30 days
+        resp.set_cookie("user_id", user_id, max_age=60*60*24*30)
         return resp
 
     except Exception as e:
