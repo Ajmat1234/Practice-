@@ -6,21 +6,18 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, session, make_response
 from flask_cors import CORS
 import requests
-from werkzeug.security import generate_password_hash, check_password_hash
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)
-# Strong secret key; production me ise environment variable se set karen.
 app.secret_key = os.getenv("SECRET_KEY", "f3a9c2a6d432e51430bbd9e27e7395d9a93f3ad0df5249c405feab54e11e0a63")
 CORS(app, supports_credentials=True)
 
-# Environment variables (ensure these are set in your deployment)
+# Environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 JSONBIN_API_KEY = os.getenv("JSONBIN_API_KEY")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
-# Local master mapping file to store user details and their JSONBin bin IDs
 MASTER_MAPPING_FILE = "master_mapping.json"
 
 def load_master_mapping():
@@ -32,14 +29,6 @@ def load_master_mapping():
 def save_master_mapping(mapping):
     with open(MASTER_MAPPING_FILE, "w") as f:
         json.dump(mapping, f)
-
-def update_user_mapping(user_id, new_bin_id):
-    mapping = load_master_mapping()
-    for user in mapping["users"]:
-        if user["id"] == user_id:
-            user["bin_id"] = new_bin_id
-            break
-    save_master_mapping(mapping)
 
 def find_user_in_mapping(email):
     mapping = load_master_mapping()
@@ -55,7 +44,6 @@ def find_user_by_id(user_id):
             return user
     return None
 
-# JSONBin functions for per-user bin
 def create_user_bin(user_data):
     headers = {
         "Content-Type": "application/json",
@@ -65,7 +53,7 @@ def create_user_bin(user_data):
     url = "https://api.jsonbin.io/v3/b"
     response = requests.post(url, headers=headers, json=user_data)
     response.raise_for_status()
-    return response.json()["record"]["id"]
+    return response.json()["metadata"]["id"]
 
 def get_user_bin(bin_id):
     headers = {"X-Master-Key": JSONBIN_API_KEY}
@@ -74,7 +62,15 @@ def get_user_bin(bin_id):
     response.raise_for_status()
     return response.json()["record"]
 
-# JARVIS prompt (static)
+def update_user_bin(bin_id, user_data):
+    headers = {
+        "Content-Type": "application/json",
+        "X-Master-Key": JSONBIN_API_KEY
+    }
+    url = f"https://api.jsonbin.io/v3/b/{bin_id}"
+    response = requests.put(url, headers=headers, json=user_data)
+    response.raise_for_status()
+
 jarvis_prompt = """
 तुम JARVIS हो – Just A Rather Very Intelligent System.
 
@@ -110,67 +106,10 @@ def is_harmful(text):
             return True
     return False
 
-# Root route for testing
 @app.route('/')
 def index():
     return "Welcome to JARVIS Chat API!"
 
-# Registration endpoint
-@app.route('/register', methods=['POST'])
-def register():
-    data = request.json
-    email = data.get('email')
-    password = data.get('password')
-    if not email or not password:
-        return jsonify({"error": "Email and password required"}), 400
-
-    if find_user_in_mapping(email):
-        return jsonify({"error": "User already exists"}), 400
-
-    user_id = str(uuid.uuid4())
-    hashed_password = generate_password_hash(password)
-    user_data = {
-        "id": user_id,
-        "email": email,
-        "conversations": []
-    }
-    try:
-        user_bin_id = create_user_bin(user_data)
-    except Exception as e:
-        return jsonify({"error": "Failed to create user bin", "details": str(e)}), 500
-
-    mapping = load_master_mapping()
-    mapping["users"].append({
-        "id": user_id,
-        "email": email,
-        "password_hash": hashed_password,
-        "bin_id": user_bin_id
-    })
-    save_master_mapping(mapping)
-
-    session['user_id'] = user_id
-    resp = make_response(jsonify({"message": "Registration successful"}), 201)
-    resp.set_cookie("user_id", user_id, max_age=60*60*24*30)
-    return resp
-
-# Login endpoint
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.json
-    email = data.get('email')
-    password = data.get('password')
-    if not email or not password:
-        return jsonify({"error": "Email and password required"}), 400
-
-    user = find_user_in_mapping(email)
-    if user and user.get("password_hash") and check_password_hash(user["password_hash"], password):
-        session['user_id'] = user['id']
-        resp = make_response(jsonify({"message": "Login successful"}), 200)
-        resp.set_cookie("user_id", user['id'], max_age=60*60*24*30)
-        return resp
-    return jsonify({"error": "Invalid credentials"}), 401
-
-# Google login endpoint
 @app.route('/google_login', methods=['POST'])
 def google_login():
     token = request.json.get('token')
@@ -185,7 +124,6 @@ def google_login():
 
     user = find_user_in_mapping(email)
     if not user:
-        # New user: create a new bin and add to mapping
         user_id = str(uuid.uuid4())
         user_data = {
             "id": user_id,
@@ -201,19 +139,23 @@ def google_login():
         mapping["users"].append({
             "id": user_id,
             "email": email,
-            "password_hash": None,
             "bin_id": user_bin_id
         })
         save_master_mapping(mapping)
         user = find_user_in_mapping(email)
 
-    # Set session and cookie for logged in user
     session['user_id'] = user['id']
     resp = make_response(jsonify({"message": "Login successful via Google"}), 200)
     resp.set_cookie("user_id", user['id'], max_age=60*60*24*30)
     return resp
 
-# Chat endpoint
+@app.route('/check_auth', methods=['GET'])
+def check_auth():
+    user_id = session.get('user_id') or request.cookies.get("user_id")
+    if user_id and find_user_by_id(user_id):
+        return jsonify({"authenticated": True})
+    return jsonify({"authenticated": False}), 401
+
 @app.route('/chat', methods=['POST'])
 def chat():
     conversation_id = None
@@ -285,18 +227,15 @@ def chat():
             "conversations": conversations
         }
         try:
-            new_bin_id = create_user_bin(new_user_data)
+            update_user_bin(user_mapping["bin_id"], new_user_data)
         except Exception as e:
             return jsonify({"error": "Failed to update user bin", "details": str(e)}), 500
-
-        update_user_mapping(user_id, new_bin_id)
         
         return jsonify({"reply": reply, "conversation_id": conversation_id})
     except Exception as e:
         print("Chat Error:", e)
         return jsonify({"reply": "माफ़ करें, कुछ गड़बड़ हो गई है।", "conversation_id": conversation_id}), 500
 
-# Get conversations endpoint
 @app.route('/get_conversations', methods=['GET'])
 def get_conversations():
     user_id = session.get('user_id') or request.cookies.get("user_id")
