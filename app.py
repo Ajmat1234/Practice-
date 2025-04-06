@@ -11,13 +11,13 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "f3a9c2a6d432e51430bbd9e27e7395d9a93f3ad0df5249c405feab54e11e0a63")  # Strong secret key set karen
+# Set a strong secret key. Production me ise environment variable se set karen.
+app.secret_key = os.getenv("SECRET_KEY", "f3a9c2a6d432e51430bbd9e27e7395d9a93f3ad0df5249c405feab54e11e0a63")
 CORS(app, supports_credentials=True)
 
 # Environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 JSONBIN_API_KEY = os.getenv("JSONBIN_API_KEY")
-# JSONBIN_BIN_ID is not used now for user data; instead, each user gets its own bin.
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
 # Local master mapping file to store user details and their JSONBin bin IDs
@@ -64,7 +64,6 @@ def create_user_bin(user_data):
     headers = {
         "Content-Type": "application/json",
         "X-Master-Key": JSONBIN_API_KEY,
-        # Optionally set a bin name:
         "X-Bin-Name": "user_data"
     }
     url = "https://api.jsonbin.io/v3/b"
@@ -79,7 +78,7 @@ def get_user_bin(bin_id):
     response.raise_for_status()
     return response.json()["record"]
 
-# JARVIS prompt (as provided)
+# JARVIS prompt
 jarvis_prompt = """
 तुम JARVIS हो – Just A Rather Very Intelligent System.
 
@@ -115,6 +114,11 @@ def is_harmful(text):
             return True
     return False
 
+# -------------------- Additional Root Route --------------------
+@app.route('/')
+def index():
+    return "Welcome to JARVIS Chat API!"
+
 # -------------------- Endpoints --------------------
 
 # Registration endpoint
@@ -126,25 +130,21 @@ def register():
     if not email or not password:
         return jsonify({"error": "Email and password required"}), 400
 
-    # Check master mapping for existing user
     if find_user_in_mapping(email):
         return jsonify({"error": "User already exists"}), 400
 
     user_id = str(uuid.uuid4())
     hashed_password = generate_password_hash(password)
-    # Initial user data for JSONBin (conversations empty)
     user_data = {
         "id": user_id,
         "email": email,
         "conversations": []
     }
-    # Create new bin for this user
     try:
         user_bin_id = create_user_bin(user_data)
     except Exception as e:
         return jsonify({"error": "Failed to create user bin", "details": str(e)}), 500
 
-    # Update local master mapping
     mapping = load_master_mapping()
     mapping["users"].append({
         "id": user_id,
@@ -186,7 +186,6 @@ def google_login():
         user = find_user_in_mapping(email)
         if not user:
             user_id = str(uuid.uuid4())
-            # Initial data for Google user (password_hash is None)
             user_data = {
                 "id": user_id,
                 "email": email,
@@ -227,7 +226,6 @@ def chat():
         if not user_mapping:
             return jsonify({"error": "User not found in mapping"}), 404
 
-        # Get user's conversation data from their JSONBin bin
         try:
             user_data = get_user_bin(user_mapping["bin_id"])
         except Exception as e:
@@ -256,14 +254,12 @@ def chat():
         memory_context = "\n".join(memory)
         full_prompt = f"{jarvis_prompt}\n{memory_context}\nUser: \"{user_input}\"\nJARVIS:"
         
-        # Gemini API call for response generation
         gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
         response = requests.post(gemini_url, json=payload, timeout=10)
         response.raise_for_status()
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
         memory.append(f"JARVIS: {reply}")
-        # Limit conversation history to last 20 messages
         if len(memory) > 20:
             memory = memory[-20:]
         
@@ -281,7 +277,6 @@ def chat():
                     conv["last_active"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
                     break
 
-        # Instead of updating the existing bin, create a new bin with updated user data.
         new_user_data = {
             "id": user_id,
             "email": user_mapping["email"],
@@ -292,7 +287,6 @@ def chat():
         except Exception as e:
             return jsonify({"error": "Failed to update user bin", "details": str(e)}), 500
 
-        # Update local master mapping with the new bin id
         update_user_mapping(user_id, new_bin_id)
         
         return jsonify({"reply": reply, "conversation_id": conversation_id})
