@@ -11,8 +11,9 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)
-# Set a strong secret key. Production me ise environment variable se set karen.
+# Set a strong secret key; production me ise environment variable se set karen.
 app.secret_key = os.getenv("SECRET_KEY", "f3a9c2a6d432e51430bbd9e27e7395d9a93f3ad0df5249c405feab54e11e0a63")
+# CORS configuration with credentials enabled.
 CORS(app, supports_credentials=True)
 
 # Environment variables
@@ -57,10 +58,6 @@ def find_user_by_id(user_id):
 
 # JSONBin functions for per-user bin
 def create_user_bin(user_data):
-    """
-    Creates a new bin on JSONBin with the given user_data.
-    Returns the new bin's id.
-    """
     headers = {
         "Content-Type": "application/json",
         "X-Master-Key": JSONBIN_API_KEY,
@@ -114,12 +111,10 @@ def is_harmful(text):
             return True
     return False
 
-# -------------------- Additional Root Route --------------------
+# Root route for testing
 @app.route('/')
 def index():
     return "Welcome to JARVIS Chat API!"
-
-# -------------------- Endpoints --------------------
 
 # Registration endpoint
 @app.route('/register', methods=['POST'])
