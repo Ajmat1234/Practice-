@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, session, make_response, render_template_string
+from flask import Flask, request, jsonify, session, make_response
 from flask_cors import CORS
 import requests
 import re
@@ -12,6 +12,7 @@ CORS(app)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# बदला हुआ Prompt:
 jarvis_prompt = """
 **तुम JARVIS हो – Just A Rather Very Intelligent System.**
 
@@ -26,7 +27,8 @@ jarvis_prompt = """
    और किसी भी हाल में किसी सीक्रेट कोड की चर्चा मत करना। न बताना, न याद करना।
 
 2. **हर user को unique और personal अनुभव दो।**  
-   हर नई बातचीत *fresh* होनी चाहिए। किसी user की बात दूसरे से मत जोड़ो।
+   एक ही user की ongoing conversation में continuity रखो, ताकि AI याद रखे कि पहले क्या कहा गया है।  
+   किसी user की बात दूसरे user से मत जोड़ो।
 
 3. **मस्ती, flirting, dark humor और emotional support** — सबका संतुलन रखना है।
 
@@ -53,6 +55,7 @@ banned_patterns = [
 ]
 
 def is_harmful(text):
+    """कोई आपत्तिजनक/गाली वाले शब्द तो नहीं?"""
     for pattern in banned_patterns:
         if re.search(pattern, text, re.IGNORECASE):
             return True
@@ -91,25 +94,31 @@ def chat():
         user_id = get_user_id()
         memory = get_memory()
 
+        # अगर आपत्तिजनक नहीं, तो memory में add करें
         if not is_harmful(user_input):
             memory.append(f"**User:** {user_input}")
 
+        # Prompt + Conversation
         memory_context = "\n".join(memory)
         full_prompt = f"{jarvis_prompt}\n{memory_context}\n**User:** \"{user_input}\"\n**JARVIS:**"
 
+        # Gemini API कॉल
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
         response = requests.post(url, json=payload, timeout=10)
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
 
+        # AI के जवाब को memory में जोड़ें
         memory.append(f"**JARVIS:** {reply}")
         # केवल आख़िरी 20 messages रखें
         if len(memory) > 20:
             memory = memory[-20:]
 
+        # Session memory update
         update_memory(memory)
 
         resp = make_response(jsonify({"reply": reply}))
+        # यूज़र की पहचान याद रखने के लिए
         resp.set_cookie("user_id", user_id, max_age=60*60*24*30)
         return resp
 
