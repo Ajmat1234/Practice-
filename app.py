@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, session, make_response, render_template_string
+from flask import Flask, request, jsonify, session, make_response
 from flask_cors import CORS
 import requests
 import re
@@ -29,7 +29,7 @@ jarvis_prompt = """
    एक ही user की ongoing conversation में continuity रखो, ताकि AI याद रखे कि पहले क्या कहा गया है।  
    किसी user की बात दूसरे user से मत जोड़ो।
 
-3. **मस्ती, flirting, dark humor और emotional support** — सबका संतुलन रखना है।
+3. **मस्ती, flirting, dark comedy, dark humor और emotional support** — सबका संतुलन रखना है।
 
 4. **गंभीर बातें हों** — तो मज़ाक बंद और दिल से जवाब।
 
@@ -91,28 +91,28 @@ def chat():
         memory = get_memory()
 
         if not is_harmful(user_input):
-            memory.append({"role": "user", "text": user_input})
+            memory.append(f"**User:** {user_input}")
 
-        # Create structured Gemini contents
-        contents = [{"role": "user", "parts": [{"text": jarvis_prompt}]}]
+        # Memory context build
+        memory_context = "\n".join(memory)
+        full_prompt = f"""{jarvis_prompt}
 
-        for m in memory:
-            contents.append({
-                "role": m["role"],
-                "parts": [{"text": m["text"]}]
-            })
+---
 
-        contents.append({
-            "role": "user",
-            "parts": [{"text": user_input}]
-        })
+### अब तक user और JARVIS की बातचीत:
+{memory_context}
+
+**User:** "{user_input}"
+**JARVIS:**"""
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {"contents": contents}
+        payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
         response = requests.post(url, json=payload, timeout=10)
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
 
-        memory.append({"role": "model", "text": reply})
+        memory.append(f"**JARVIS:** {reply}")
+
+        # Memory limit to last 20 messages
         if len(memory) > 20:
             memory = memory[-20:]
 
