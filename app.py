@@ -11,11 +11,11 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)
-# Set a strong secret key; production me ise environment variable se set karen.
+# Strong secret key; production me ise environment variable se set karen.
 app.secret_key = os.getenv("SECRET_KEY", "f3a9c2a6d432e51430bbd9e27e7395d9a93f3ad0df5249c405feab54e11e0a63")
 CORS(app, supports_credentials=True)
 
-# Environment variables
+# Environment variables (ensure these are set in your deployment)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 JSONBIN_API_KEY = os.getenv("JSONBIN_API_KEY")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -74,7 +74,7 @@ def get_user_bin(bin_id):
     response.raise_for_status()
     return response.json()["record"]
 
-# JARVIS prompt (unchanged)
+# JARVIS prompt (static)
 jarvis_prompt = """
 तुम JARVIS हो – Just A Rather Very Intelligent System.
 
@@ -115,7 +115,7 @@ def is_harmful(text):
 def index():
     return "Welcome to JARVIS Chat API!"
 
-# Registration endpoint (unchanged)
+# Registration endpoint
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
@@ -153,7 +153,7 @@ def register():
     resp.set_cookie("user_id", user_id, max_age=60*60*24*30)
     return resp
 
-# Login endpoint (unchanged)
+# Login endpoint
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
@@ -170,7 +170,7 @@ def login():
         return resp
     return jsonify({"error": "Invalid credentials"}), 401
 
-# Updated Google login endpoint
+# Google login endpoint
 @app.route('/google_login', methods=['POST'])
 def google_login():
     token = request.json.get('token')
@@ -185,7 +185,7 @@ def google_login():
 
     user = find_user_in_mapping(email)
     if not user:
-        # New user, create bin and add to mapping
+        # New user: create a new bin and add to mapping
         user_id = str(uuid.uuid4())
         user_data = {
             "id": user_id,
@@ -206,13 +206,14 @@ def google_login():
         })
         save_master_mapping(mapping)
         user = find_user_in_mapping(email)
-    # User exists or created successfully: set session and cookie
+
+    # Set session and cookie for logged in user
     session['user_id'] = user['id']
     resp = make_response(jsonify({"message": "Login successful via Google"}), 200)
     resp.set_cookie("user_id", user['id'], max_age=60*60*24*30)
     return resp
 
-# Chat endpoint (unchanged)
+# Chat endpoint
 @app.route('/chat', methods=['POST'])
 def chat():
     conversation_id = None
@@ -295,7 +296,7 @@ def chat():
         print("Chat Error:", e)
         return jsonify({"reply": "माफ़ करें, कुछ गड़बड़ हो गई है।", "conversation_id": conversation_id}), 500
 
-# Get conversations endpoint (unchanged)
+# Get conversations endpoint
 @app.route('/get_conversations', methods=['GET'])
 def get_conversations():
     user_id = session.get('user_id') or request.cookies.get("user_id")
