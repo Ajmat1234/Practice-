@@ -1,76 +1,19 @@
 import os
 import re
-import uuid
 import json
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, session, make_response
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "f3a9c2a6d432e51430bbd9e27e7395d9a93f3ad0df5249c405feab54e11e0a63")
-CORS(app, supports_credentials=True)
+CORS(app)
 
 # Environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 JSONBIN_API_KEY = os.getenv("JSONBIN_API_KEY")
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GLOBAL_BIN_ID = os.getenv("GLOBAL_BIN_ID")  # Set this in your environment
 
-MASTER_MAPPING_FILE = "master_mapping.json"
-
-def load_master_mapping():
-    if not os.path.exists(MASTER_MAPPING_FILE):
-        return {"users": []}
-    with open(MASTER_MAPPING_FILE, "r") as f:
-        return json.load(f)
-
-def save_master_mapping(mapping):
-    with open(MASTER_MAPPING_FILE, "w") as f:
-        json.dump(mapping, f)
-
-def find_user_in_mapping(email):
-    mapping = load_master_mapping()
-    for user in mapping["users"]:
-        if user["email"] == email:
-            return user
-    return None
-
-def find_user_by_id(user_id):
-    mapping = load_master_mapping()
-    for user in mapping["users"]:
-        if user["id"] == user_id:
-            return user
-    return None
-
-def create_user_bin(user_data):
-    headers = {
-        "Content-Type": "application/json",
-        "X-Master-Key": JSONBIN_API_KEY,
-        "X-Bin-Name": "user_data"
-    }
-    url = "https://api.jsonbin.io/v3/b"
-    response = requests.post(url, headers=headers, json=user_data)
-    response.raise_for_status()
-    return response.json()["metadata"]["id"]
-
-def get_user_bin(bin_id):
-    headers = {"X-Master-Key": JSONBIN_API_KEY}
-    url = f"https://api.jsonbin.io/v3/b/{bin_id}"
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()["record"]
-
-def update_user_bin(bin_id, user_data):
-    headers = {
-        "Content-Type": "application/json",
-        "X-Master-Key": JSONBIN_API_KEY
-    }
-    url = f"https://api.jsonbin.io/v3/b/{bin_id}"
-    response = requests.put(url, headers=headers, json=user_data)
-    response.raise_for_status()
-
+# JARVIS prompt
 jarvis_prompt = """
 तुम JARVIS हो – Just A Rather Very Intelligent System.
 
@@ -106,152 +49,60 @@ def is_harmful(text):
             return True
     return False
 
+def get_global_bin():
+    headers = {"X-Master-Key": JSONBIN_API_KEY}
+    url = f"https://api.jsonbin.io/v3/b/{GLOBAL_BIN_ID}"
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return response.json()["record"]
+
+def update_global_bin(data):
+    headers = {
+        "Content-Type": "application/json",
+        "X-Master-Key": JSONBIN_API_KEY
+    }
+    url = f"https://api.jsonbin.io/v3/b/{GLOBAL_BIN_ID}"
+    response = requests.put(url, headers=headers, json=data)
+    response.raise_for_status()
+
 @app.route('/')
 def index():
     return "Welcome to JARVIS Chat API!"
 
-@app.route('/google_login', methods=['POST'])
-def google_login():
-    token = request.json.get('token')
-    try:
-        idinfo = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
-    except ValueError as e:
-        return jsonify({"error": "Google verification failed", "details": str(e)}), 400
-
-    email = idinfo.get('email')
-    if not email:
-        return jsonify({"error": "Google did not return an email address"}), 400
-
-    user = find_user_in_mapping(email)
-    if not user:
-        user_id = str(uuid.uuid4())
-        user_data = {
-            "id": user_id,
-            "email": email,
-            "conversations": []
-        }
-        try:
-            user_bin_id = create_user_bin(user_data)
-        except Exception as e:
-            return jsonify({"error": "Failed to create user bin", "details": str(e)}), 500
-
-        mapping = load_master_mapping()
-        mapping["users"].append({
-            "id": user_id,
-            "email": email,
-            "bin_id": user_bin_id
-        })
-        save_master_mapping(mapping)
-        user = find_user_in_mapping(email)
-
-    session['user_id'] = user['id']
-    resp = make_response(jsonify({"message": "Login successful via Google"}), 200)
-    resp.set_cookie("user_id", user['id'], max_age=60*60*24*30)
-    return resp
-
-@app.route('/check_auth', methods=['GET'])
-def check_auth():
-    user_id = session.get('user_id') or request.cookies.get("user_id")
-    if user_id and find_user_by_id(user_id):
-        return jsonify({"authenticated": True})
-    return jsonify({"authenticated": False}), 401
-
 @app.route('/chat', methods=['POST'])
 def chat():
-    conversation_id = None
     try:
         user_input = request.json.get("message", "")
-        conversation_id = request.json.get("conversation_id")
-        user_id = session.get('user_id') or request.cookies.get("user_id")
-        if not user_id:
-            return jsonify({"error": "Unauthorized"}), 401
+        if is_harmful(user_input):
+            return jsonify({"reply": "क्षमा करें, आपका संदेश अनुचित है।"}), 400
 
-        user_mapping = find_user_by_id(user_id)
-        if not user_mapping:
-            return jsonify({"error": "User not found in mapping"}), 404
+        # Load global chat history
+        global_data = get_global_bin()
+        memory = global_data.get("messages", [])
 
-        try:
-            user_data = get_user_bin(user_mapping["bin_id"])
-        except Exception as e:
-            return jsonify({"error": "Failed to fetch user data", "details": str(e)}), 500
-
-        conversations = user_data.get("conversations", [])
-        memory = []
-        if conversation_id:
-            conv = next((c for c in conversations if c["id"] == conversation_id), None)
-            if conv:
-                last_active = datetime.strptime(conv.get("last_active"), "%Y-%m-%dT%H:%M:%S")
-                if datetime.utcnow() - last_active > timedelta(days=6):
-                    memory = []
-                else:
-                    memory = conv.get("messages", [])
-        
-        if not user_input and conversation_id:
-            return jsonify({"reply": "\n".join(memory), "conversation_id": conversation_id})
-        
-        if user_input and is_harmful(user_input):
-            return jsonify({"reply": "क्षमा करें, आपका संदेश अनुचित है।", "conversation_id": conversation_id}), 400
-        
-        if user_input:
-            memory.append(f"User: {user_input}")
-        
+        memory.append(f"User: {user_input}")
         memory_context = "\n".join(memory)
         full_prompt = f"{jarvis_prompt}\n{memory_context}\nUser: \"{user_input}\"\nJARVIS:"
-        
+
         gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
         response = requests.post(gemini_url, json=payload, timeout=10)
         response.raise_for_status()
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
         memory.append(f"JARVIS: {reply}")
+
+        # Keep only last 20 messages
         if len(memory) > 20:
             memory = memory[-20:]
-        
-        if not conversation_id:
-            conversation_id = str(uuid.uuid4())
-            conversations.append({
-                "id": conversation_id,
-                "messages": memory,
-                "last_active": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-            })
-        else:
-            for conv in conversations:
-                if conv["id"] == conversation_id:
-                    conv["messages"] = memory
-                    conv["last_active"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-                    break
 
-        new_user_data = {
-            "id": user_id,
-            "email": user_mapping["email"],
-            "conversations": conversations
-        }
-        try:
-            update_user_bin(user_mapping["bin_id"], new_user_data)
-        except Exception as e:
-            return jsonify({"error": "Failed to update user bin", "details": str(e)}), 500
-        
-        return jsonify({"reply": reply, "conversation_id": conversation_id})
+        # Update global bin
+        global_data["messages"] = memory
+        update_global_bin(global_data)
+
+        return jsonify({"reply": reply})
     except Exception as e:
         print("Chat Error:", e)
-        return jsonify({"reply": "माफ़ करें, कुछ गड़बड़ हो गई है।", "conversation_id": conversation_id}), 500
-
-@app.route('/get_conversations', methods=['GET'])
-def get_conversations():
-    user_id = session.get('user_id') or request.cookies.get("user_id")
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    user_mapping = find_user_by_id(user_id)
-    if not user_mapping:
-        return jsonify({"error": "User not found"}), 404
-
-    try:
-        user_data = get_user_bin(user_mapping["bin_id"])
-    except Exception as e:
-        return jsonify({"error": "Failed to fetch user data", "details": str(e)}), 500
-
-    return jsonify({"conversations": user_data.get("conversations", [])})
+        return jsonify({"reply": "माफ़ करें, कुछ गड़बड़ हो गई है।"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
