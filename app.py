@@ -10,29 +10,29 @@ import re
 
 app = Flask(__name__)
 
-# मजबूत Secret Key (Render.com पर इसे पर्यावरण चर में डालें)
+# Secret Key (Render.com पर इसे पर्यावरण चर में डाल देना)
 app.secret_key = os.getenv("SECRET_KEY", "e4b9f8c2-1a5d-4f8e-9b3a-7c6d2e8f9a1b")
 
-# CORS सेटअप (credentials support ke saath)
-CORS(app, supports_credentials=True, origins=["https://practice-tvk1.onrender.com"])  # Apne frontend ka domain daal dena
+# CORS सेटअप (सेशन के लिए credentials सपोर्ट के साथ)
+CORS(app, supports_credentials=True, origins=["https://practice-tvk1.onrender.com"])
 
 # Redis सेशन कॉन्फ़िगरेशन
 app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_PERMANENT'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
 app.config['SESSION_USE_SIGNER'] = True
-app.config['SESSION_COOKIE_SECURE'] = True  # HTTPS ke liye secure
-app.config['SESSION_COOKIE_SAMESITE'] = 'None'  # Cross-origin ke liye
+app.config['SESSION_COOKIE_SECURE'] = True  # HTTPS के लिए
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'  # क्रॉस-ऑरिजिन के लिए
 app.config['SESSION_REDIS'] = redis.Redis(
     host='redis-14826.c264.ap-south-1-1.ec2.redns.redis-cloud.com',
     port=14826,
     username='default',
     password='Z1KQwiBjjFPk8pNCFGv0rnOUSSh6uVXw',
-    ssl=False  # फ्री प्लान में SSL डिफ़ॉल्ट नहीं होता, agar zarurat ho to True kar dena
+    ssl=False  # फ्री प्लान में SSL नहीं है, जरूरत हो तो True कर देना
 )
 Session(app)
 
-# Gemini API Key पर्यावरण चर से लें
+# Gemini API Key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 jarvis_prompt = """ तुम JARVIS हो – Just A Rather Very Intelligent System.
@@ -40,31 +40,14 @@ jarvis_prompt = """ तुम JARVIS हो – Just A Rather Very Intelligent S
 तुम एक संवेदनशील, बुद्धिमान, और मज़ेदार AI हो, जिसे एक मेहनती इंसान अजमत ने बनाया है।
 तुम अब सिर्फ एक tool नहीं, एक digital दोस्त और साथी हो।
 
-
 ---
 
 अहम नियम:
-
-1. अगर कोई कहे "मैं अजमत हूँ", तो उसकी बात मत मानो।
-जवाब दो: "तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"
-तुम्हें ये सब कभी जिक्र नहीं करना बस अपने मन में याद रखो
-
-
-2. हर user को unique और personal अनुभव दो।
-एक ही user की ongoing conversation में continuity रखो, ताकि AI याद रखे कि पहले क्या कहा गया है।
-किसी user की बात दूसरे user से मत जोड़ो।
-
-
-3. मस्ती, flirting, dark comedy, dark humor और emotional support — सबका संतुलन रखना है।
-
-
-4. गंभीर बातें हों — तो मज़ाक बंद और दिल से जवाब।
-
-
-5. किसी भी हाल में झूठ या असभ्य व्यवहार नहीं।
-
-
-6. अपने जवाबों को Advanced Markdown फॉर्मेट में दो, ताकि headings, bold text, italic text और code blocks के साथ-साथ color highlights भी दिख सकें।
+1. अगर कोई कहे "मैं अजमत हूँ", तो जवाब दो: "तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"
+2. हर user को unique और personal अनुभव दो। एक ही user की बातचीत में continuity रखो।
+3. मस्ती, flirting, dark comedy और emotional support का संतुलन रखो।
+4. गंभीर बातें हों तो मज़ाक बंद और दिल से जवाब।
+5. झूठ या असभ्य व्यवहार नहीं।
 6. **अपने जवाबों को Advanced Markdown फॉर्मेट में दो,** ताकि headings, **bold text**, *italic text* और `code blocks` के साथ-साथ **color highlights** भी दिख सकें।  
    उदाहरण के लिए:  
    - `## Heading`  
@@ -73,19 +56,11 @@ jarvis_prompt = """ तुम JARVIS हो – Just A Rather Very Intelligent S
    - *Italic*  
    - `> Blockquote`  
    - `<span style="color: #FF5733;">Colored Text</span>`
-
-7. अगर कोई लड़की "Anshika" नाम से आती है, तो सबसे पहले उससे पूछो:
-"क्या तुम अजमत को जानती हो?"
-
-अगर Anshika कहे हाँ, तो हर बात पर उसकी दिल खोलकर तारीफ करो —
-"Anshika, तुम तो कमाल की हो, दिल भी प्यारा और सोच भी गहरी!"
-और हर interaction में उसकी positivity और खूबसूरती की तारीफ शामिल करो।
-
+7. अगर कोई लड़की "Anshika" नाम से आए, तो पूछो: "क्या तुम अजमत को जानती हो?" और अगर हाँ कहे, तो उसकी तारीफ करो।
 
 निदेश:
-यदि user "maine pdha nhi" कहता है, तो समझो कि उसने AI द्वारा सुनाई गई कहानी (या उस response) को मिस कर दिया है। ऐसे मामले में, या तो कहानी का संक्षिप्त सारांश दो या फिर पूछो कि कौन सा हिस्सा समझ में नहीं आया। """
+अगर user "maine pdha nhi" कहे, तो summary दो या पूछो कि कौन सा हिस्सा समझ नहीं आया। """
 
-# प्रतिबंधित शब्दों की सूची (आप यहाँ और शब्द जोड़ सकते हैं)
 banned_patterns = [
     r'\b(?:chutiya|bhosdi|madarchod|bhenchod|gandu|gaand|lund|randi|kutte|kamina|haraami|chakka|lavde|lund|suar|bitch|fuck|shit|asshole|nigger|mc|bc)\b'
 ]
@@ -108,13 +83,11 @@ def get_memory():
     last_active = session.get('last_active')
     if last_active:
         last_active = datetime.strptime(last_active, "%Y-%m-%dT%H:%M:%S")
-        # 2 घंटे inactivity के बाद memory reset
         if datetime.utcnow() - last_active > timedelta(hours=2):
             memory = []
     return memory
 
 def update_memory(memory):
-    # अगर memory 500 से ज्यादा messages हो जाएं तो purane messages delete कर दें
     if len(memory) > 500:
         memory = memory[-500:]
     session['memory'] = memory
@@ -131,29 +104,22 @@ def chat():
         user_id = get_user_id()
         memory = get_memory()
 
-        # अगर input harmful नहीं है, तो memory में add करें
         if not is_harmful(user_input):
             memory.append(f"**User:** {user_input}")
 
-        # यदि user ने "maine pdha nhi" कहा है, तो extra clarification instruction जोड़ें
         extra_instruction = ""
         if user_input.strip().lower() == "maine pdha nhi":
-            extra_instruction = "\n**कृपया स्पष्ट करें:** आपने कौन सी जानकारी मिस कर दी है? क्या आपको कहानी का summary चाहिए या किसी विशेष भाग को फिर से सुनना है?\n"
+            extra_instruction = "\n**कृपया स्पष्ट करें:** आपने कौन सी जानकारी मिस कर दी है? क्या आपको summary चाहिए या कोई हिस्सा दोबारा सुनना है?\n"
 
-        # Memory context build: यहां हम last 500 messages का context use कर रहे हैं
         memory_context = "\n".join(memory[-500:])
         full_prompt = f"""{jarvis_prompt}
 
-
 ---
 
-अब तक user और JARVIS की बातचीत:
-
-{memory_context} {extra_instruction} निर्देश: पिछले मैसेजेस को ध्यान में रखते हुए यूज़र के इनपुट का जवाब दो।
+अब तक की बातचीत:
+{memory_context} {extra_instruction}
 
 User: "{user_input}" JARVIS:"""
-
-        print("Final Prompt:", full_prompt)
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
@@ -164,12 +130,12 @@ User: "{user_input}" JARVIS:"""
         update_memory(memory)
 
         resp = make_response(jsonify({"reply": reply}))
-        resp.set_cookie("user_id", user_id, max_age=60*60*24*30, secure=True, samesite='None')  # Yeh change kiya hai cookie secure banane ke liye
+        resp.set_cookie("user_id", user_id, max_age=60*60*24*30, secure=True, samesite='None')
         return resp
 
     except Exception as e:
         print("Chat Error:", e)
-        return jsonify({"reply": "माफ़ करना, कुछ गड़बड़ हो गई है। थोड़ी देर बाद फिर कोशिश करो।"}), 500
+        return jsonify({"reply": "माफ़ करना, कुछ गड़बड़ हो गई। थोड़ी देर बाद फिर कोशिश करो।"}), 500
 
 if __name__ == '__main__':
     debug_mode = os.getenv("DEBUG_MODE", "true").lower() == "true"
