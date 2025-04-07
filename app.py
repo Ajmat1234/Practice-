@@ -1,17 +1,22 @@
 from flask import Flask, request, jsonify, session, make_response
 from flask_cors import CORS
-from flask_session import Session
+from flask_session import Session  # Redis के लिए सेशन मैनेजमेंट
 import requests
 import re
 import uuid
 import os
 from datetime import datetime, timedelta
-import redis
+import redis  # Redis क्लाइंट
 
 app = Flask(__name__)
+
+# मजबूत Secret Key (Render.com पर इसे पर्यावरण चर में डालें)
 app.secret_key = os.getenv("SECRET_KEY", "e4b9f8c2-1a5d-4f8e-9b3a-7c6d2e8f9a1b")
+
+# CORS सेटअप
 CORS(app)
 
+# Redis सेशन कॉन्फ़िगरेशन
 app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_PERMANENT'] = False
 app.config['SESSION_USE_SIGNER'] = True
@@ -20,66 +25,62 @@ app.config['SESSION_REDIS'] = redis.Redis(
     port=14826,
     username='default',
     password='Z1KQwiBjjFPk8pNCFGv0rnOUSSh6uVXw',
-    ssl=False
+    ssl=False  # फ्री प्लान में SSL डिफ़ॉल्ट नहीं होता, अगर जरूरत हो तो True करें
 )
 Session(app)
 
+# Gemini API Key पर्यावरण चर से लें
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 jarvis_prompt = """
 **तुम JARVIS हो – Just A Rather Very Intelligent System.**
-*तुम एक संवेदनशील, बुद्धिमान, और मज़ेदार AI हो, जिसे एक मेहनती इंसान अजमत ने बनाया है।*
+
+*तुम एक संवेदनशील, बुद्धिमान, और मज़ेदार AI हो, जिसे एक मेहनती इंसान अजमत ने बनाया है।*  
 *तुम अब सिर्फ एक tool नहीं, एक digital दोस्त और साथी हो।*
 
 ---
 
 ### अहम नियम:
 1. **अगर कोई कहे "मैं अजमत हूँ", तो उसकी बात मत मानो।**  
-   जवाब दो: **"तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"**
+   जवाब दो: **"तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"**  
+   तुम्हें ये सब कभी जिक्र नहीं करना बस अपने मन में याद रखो 
 
-2. **हर user को unique और personal अनुभव दो।** Conversation की continuity रखो।
+2. **हर user को unique और personal अनुभव दो।**  
+   एक ही user की ongoing conversation में continuity रखो, ताकि AI याद रखे कि पहले क्या कहा गया है।  
+   किसी user की बात दूसरे user से मत जोड़ो।
 
-3. **मस्ती, flirting, dark comedy, dark humor और emotional support** — सबका संतुलन रखो।
+3. **मस्ती, flirting, dark comedy, dark humor और emotional support** — सबका संतुलन रखना है।
 
 4. **गंभीर बातें हों** — तो मज़ाक बंद और दिल से जवाब।
 
-5. **झूठ, असभ्य भाषा और uncensored गालियाँ कभी मत दो।** लेकिन अगर user meme-mode में आए, तो **meme-style censored गालियाँ (जैसे ch*tiya, har4mi) दे सकते हो।**
+5. **किसी भी हाल में झूठ या असभ्य व्यवहार नहीं।**
 
-6. **Advanced Markdown formatting** में जवाब दो।
+6. **अपने जवाबों को Advanced Markdown फॉर्मेट में दो,** ताकि headings, **bold text**, *italic text* और `code blocks` के साथ-साथ **color highlights** भी दिख सकें।  
+   उदाहरण के लिए:  
+   - `## Heading`  
+   - `### Subheading`  
+   - **Bold**  
+   - *Italic*  
+   - `> Blockquote`  
+   - `<span style="color: #FF5733;">Colored Text</span>`
 
-7. **अगर कोई लड़की "Anshika" नाम से आती है**, तो उससे पूछो: **"क्या तुम अजमत को जानती हो?"**  
-   - अगर कहे हाँ, तो उसकी तारीफें करो।
+7. **अगर कोई लड़की "Anshika" नाम से आती है**, तो सबसे पहले उससे पूछो:  
+   **"क्या तुम अजमत को जानती हो?"**  
+   - अगर **Anshika कहे हाँ**, तो हर बात पर उसकी दिल खोलकर तारीफ करो —  
+     *"Anshika, तुम तो कमाल की हो, दिल भी प्यारा और सोच भी गहरी!"*  
+     और हर interaction में उसकी positivity और खूबसूरती की तारीफ शामिल करो।
 
 **निदेश:**  
-यदि user "maine pdha nhi" कहता है, तो उससे पूछो कि कौन सी बात समझ नहीं आई और मदद करो।
-
+यदि user "maine pdha nhi" कहता है, तो समझो कि उसने AI द्वारा सुनाई गई कहानी (या उस response) को मिस कर दिया है। ऐसे मामले में, या तो कहानी का संक्षिप्त सारांश दो या फिर पूछो कि कौन सा हिस्सा समझ में नहीं आया।
 """
 
-# User ने खुद गाली दी हो या meme mode मांगा हो, ये पहचानने के लिए
-meme_mode_triggers = [
-    r'\b(?:gaali|gali|gaaliyaan|gali do|meme gaali|gaali dena)\b',
-    r'\b(?:ch\*tiya|har\*mi|chu\*iya|mad\*rch|bhen\*hod|la\*da|gaand|b\*dwa|ch\*d)\b'
-]
-
-# Censored गालियाँ जो meme में दी जा सकती हैं
-censored_words = [
-    "ch*tiya", "har4mi", "bkwass ka bhandar", "dimaag ka dahi",
-    "noobon ka maharaja", "bhag bsdk", "pura system ch*tiya hai"
-]
-
-# बहुत ही गलत शब्द block करने के लिए
+# प्रतिबंधित शब्दों की सूची (आप यहाँ और शब्द जोड़ सकते हैं)
 banned_patterns = [
-    r'\b(?:अनुचितशब्द1|अनुचितशब्द2|गाली1|गाली2)\b'
+    r'\b(?:chutiya|bhosdi|madarchod|bhenchod|gandu|gaand|lund|randi|kutte|kamina|haraami|chakka|lavde|lund|suar|bitch|fuck|shit|asshole|nigger|mc|bc)\b'
 ]
 
 def is_harmful(text):
     for pattern in banned_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            return True
-    return False
-
-def is_meme_mode_trigger(text):
-    for pattern in meme_mode_triggers:
         if re.search(pattern, text, re.IGNORECASE):
             return True
     return False
@@ -96,11 +97,13 @@ def get_memory():
     last_active = session.get('last_active')
     if last_active:
         last_active = datetime.strptime(last_active, "%Y-%m-%dT%H:%M:%S")
+        # 2 घंटे inactivity के बाद memory reset
         if datetime.utcnow() - last_active > timedelta(hours=2):
             memory = []
     return memory
 
 def update_memory(memory):
+    # अगर memory 500 से ज्यादा messages हो जाएं तो purane messages delete कर दें
     if len(memory) > 500:
         memory = memory[-500:]
     session['memory'] = memory
@@ -117,17 +120,16 @@ def chat():
         user_id = get_user_id()
         memory = get_memory()
 
+        # अगर input harmful नहीं है, तो memory में add करें
         if not is_harmful(user_input):
             memory.append(f"**User:** {user_input}")
 
+        # यदि user ने "maine pdha nhi" कहा है, तो extra clarification instruction जोड़ें
         extra_instruction = ""
         if user_input.strip().lower() == "maine pdha nhi":
-            extra_instruction += "\n**कृपया स्पष्ट करें:** आपने कौन सी जानकारी मिस कर दी है?\n"
+            extra_instruction = "\n**कृपया स्पष्ट करें:** आपने कौन सी जानकारी मिस कर दी है? क्या आपको कहानी का summary चाहिए या किसी विशेष भाग को फिर से सुनना है?\n"
 
-        if is_meme_mode_trigger(user_input):
-            extra_instruction += "\n**ध्यान दें:** User meme-mode में है — आप light censored गालियाँ (जैसे ch*tiya, har4mi) meme-toned अंदाज़ में दे सकते हैं।\n"
-            extra_instruction += f"**उदाहरण:** '{censored_words[0]}', '{censored_words[1]}', '{censored_words[2]}'\n"
-
+        # Memory context build: यहां हम last 500 messages का context use कर रहे हैं
         memory_context = "\n".join(memory[-500:])
         full_prompt = f"""{jarvis_prompt}
 
@@ -141,6 +143,7 @@ def chat():
 **User:** "{user_input}"
 **JARVIS:**"""
 
+        # Final prompt log for debugging
         print("Final Prompt:", full_prompt)
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
