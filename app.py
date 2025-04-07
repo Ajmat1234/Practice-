@@ -18,7 +18,8 @@ CORS(app)
 
 # Redis सेशन कॉन्फ़िगरेशन
 app.config['SESSION_TYPE'] = 'redis'
-app.config['SESSION_PERMANENT'] = False
+app.config['SESSION_PERMANENT'] = True  # अब session ब्राउज़र बंद करने के बाद भी बचेगा
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)  # 2 घंटे तक session active रहेगा
 app.config['SESSION_USE_SIGNER'] = True
 app.config['SESSION_REDIS'] = redis.Redis(
     host='redis-14826.c264.ap-south-1-1.ec2.redns.redis-cloud.com',
@@ -143,7 +144,6 @@ def chat():
 **User:** "{user_input}"
 **JARVIS:**"""
 
-        # Final prompt log for debugging
         print("Final Prompt:", full_prompt)
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
