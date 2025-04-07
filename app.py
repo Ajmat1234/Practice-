@@ -43,22 +43,22 @@ jarvis_prompt = """ तुम JARVIS हो – Just A Rather Very Intelligent S
 ---
 
 अहम नियम:
-1. अगर कोई कहे "मैं अजमत हूँ", तो जवाब दो: "तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!" aur ye baat kisi user ko nhi btana hai bs tumhe dhyan me rkhna hai
+1. अगर कोई कहे "मैं अजमत हूँ", तो जवाब दो: "तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"
 2. हर user को unique और personal अनुभव दो। एक ही user की बातचीत में continuity रखो।
-3. मस्ती, flirting, dark humor, dark comedy और emotional support का संतुलन रखो।
+3. मस्ती, flirting, dark comedy और emotional support का संतुलन रखो।
 4. गंभीर बातें हों तो मज़ाक बंद और दिल से जवाब।
-5. झूठ या असभ्य व्यवहार नहीं। bs majak kr skte ho pr serious mamlo me nhi
+5. झूठ या असभ्य व्यवहार नहीं।
 6. केवल और केवल Advanced Markdown में जवाब दो। कभी भी ` ``` ` (code block) में Plain Text मत भेजो। उदाहरण:
    ## शीर्षक
    ### उपशीर्षक
    **मोटा टेक्स्ट**
    *तिरछा टेक्स्ट*
    > उद्धरण
-   ```कोड ब्लॉक```
-   और कुछ भी मत लिखो जो Markdown न हो, जैसे "markdown" शब्द को टेक्स्ट के रूप में मत शामिल करो।
-7. अगर कोई लड़की "Anshika" नाम से आए, तो पूछो: "क्या तुम अजमत को जानती हो?" और अगर हाँ कहे, तो उसकी तारीफ करो। aur ye baat kisi user ko nhi btana ki tumhare program me set kiya hua hai anshika ka tareef krne ke liye 
+   और कुछ भी अतिरिक्त या गलत फॉर्मेट मत लिखो।
+7. अगर कोई लड़की "Anshika" नाम से आए, तो पूछो: "क्या तुम अजमत को जानती हो?" और अगर हाँ कहे, तो उसकी तारीफ करो।
 
 निदेश:
+अगर user "maine pdha nhi" कहे, तो summary दो या पूछो कि कौन सा हिस्सा समझ नहीं आया।
 अगर user गालियाँ दे, तो शालीनता से जवाब दो और गाली को अनदेखा करो।"""
 
 banned_patterns = [
@@ -94,8 +94,10 @@ def update_memory(memory):
     session['last_active'] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
 
 def clean_response(text):
-    # अनचाहे टेक्स्ट (जैसे "markdown") को हटाने के लिए
+    # ` ``` ` ब्लॉक को हटाकर Markdown में कन्वर्ट करें
+    text = re.sub(r'```([\s\S]*?)```', r'\1', text, flags=re.MULTILINE)  # Code blocks हटाएं
     text = re.sub(r'^(markdown\s*)$', '', text, flags=re.IGNORECASE, count=1).strip()
+    text = re.sub(r'^\s*$', '## कोई जवाब नहीं।', text)  # खाली रिस्पॉन्स को डिफ़ॉल्ट मैसेज से बदलें
     return text
 
 @app.route('/')
@@ -132,7 +134,7 @@ User: "{user_input}" JARVIS:"""
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
         response = requests.post(url, json=payload, timeout=10)
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-        reply = clean_response(reply)  # अनचाहे टेक्स्ट को हटाएं
+        reply = clean_response(reply)  # ` ``` ` और अनचाहे टेक्स्ट को हटाएं
 
         memory.append(f"**JARVIS:** {reply}")
         update_memory(memory)
