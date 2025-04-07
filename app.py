@@ -1,20 +1,25 @@
 from flask import Flask, request, jsonify, session, make_response
 from flask_cors import CORS
-from flask_session import Session  # Redis के लिए सेशन मैनेजमेंट
+from flask_session import Session
 import requests
 import re
 import uuid
 import os
 from datetime import datetime, timedelta
-import redis  # Redis क्लाइंट
+import redis
+import logging
 
 app = Flask(__name__)
 
-# मजबूत Secret Key (Render.com पर इसे पर्यावरण चर में डालें)
+# लॉगिंग सेटअप
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# मजबूत Secret Key
 app.secret_key = os.getenv("SECRET_KEY", "e4b9f8c2-1a5d-4f8e-9b3a-7c6d2e8f9a1b")
 
-# CORS सेटअप
-CORS(app)
+# CORS सेटअप (Vercel URL डालें)
+CORS(app, resources={r"/chat": {"origins": "https://<your-vercel-app>.vercel.app"}})
 
 # Redis सेशन कॉन्फ़िगरेशन
 app.config['SESSION_TYPE'] = 'redis'
@@ -25,11 +30,11 @@ app.config['SESSION_REDIS'] = redis.Redis(
     port=14826,
     username='default',
     password='Z1KQwiBjjFPk8pNCFGv0rnOUSSh6uVXw',
-    ssl=False  # फ्री प्लान में SSL डिफ़ॉल्ट नहीं होता, अगर जरूरत हो तो True करें
+    ssl=False
 )
 Session(app)
 
-# Gemini API Key पर्यावरण चर से लें
+# Gemini API Key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # JARVIS प्रॉम्प्ट
@@ -65,14 +70,13 @@ jarvis_prompt = """
    - `> Blockquote`  
    - `<span style="color: #FF5733;">Colored Text</span>`
 
+---
+
 **निदेश:**  
-यदि user "maine pdha nhi" कहता है, तो समझो कि उसने AI द्वारा सुनाई गई कहानी (या उस response) को मिस कर दिया है। ऐसे मामले में, या तो कहानी का संक्षिप्त सारांश दो या फिर पूछो कि कौन सा हिस्सा समझ में नहीं आया।
+- यदि user "maine pdha nhi" कहता है, तो समझो कि उसने AI द्वारा सुनाई गई कहानी (या पिछले जवाब) को मिस कर दिया है। ऐसे में, पिछले जवाब का संक्षिप्त सारांश दो या पूछो कि कौन सा हिस्सा समझ में नहीं आया।
 """
 
-# प्रतिबंधित शब्दों की सूची (आप यहाँ और शब्द जोड़ सकते हैं)
-banned_patterns = [
-    r'\b(?:अनुचितशब्द1|अनुचितशब्द2|गाली1|गाली2)\b'
-]
+banned_patterns = [r'\b(?:अनुचितशब्द1|अनुचितशब्द2|गाली1|गाली2)\b']
 
 def is_harmful(text):
     for pattern in banned_patterns:
@@ -85,76 +89,100 @@ def get_user_id():
     if not user_id:
         user_id = str(uuid.uuid4())
     session['user_id'] = user_id
+    logger.debug(f"Set user_id in session: {user_id}")
     return user_id
 
 def get_memory():
     memory = session.get('memory', [])
     last_active = session.get('last_active')
     if last_active:
-        last_active = datetime.strptime(last_active, "%Y-%m-%dT%H:%M:%S")
-        # 2 घंटे inactivity के बाद memory reset
-        if datetime.utcnow() - last_active > timedelta(hours=2):
+        try:
+            last_active = datetime.strptime(last_active, "%Y-%m-%dT%H:%M:%S")
+            if datetime.utcnow() - last_active > timedelta(hours=2):  # 2 घंटे बाद रीसेट
+                memory = []
+                logger.debug("Memory reset due to 2-hour inactivity")
+        except ValueError:
             memory = []
+            logger.debug("Invalid last_active format, resetting memory")
+    logger.debug(f"Retrieved memory from Redis: {memory}")
     return memory
 
+def summarize_response(response):
+    """JARVIS के जवाब का संक्षेप बनाएँ"""
+    if "कहानी" in response.lower():
+        return "**JARVIS:** एक कहानी सुनाई जिसमें [मुख्य बिंदु संक्षेप में]।"
+    return f"**JARVIS:** {response[:50]}..."  # पहले 50 कैरेक्टर का संक्षेप
+
 def update_memory(memory):
-    # अगर memory 500 से ज्यादा messages हो जाएं तो purane messages delete कर दें
+    # 500 मैसेज से ज्यादा हो तो पुराने हटाएँ
     if len(memory) > 500:
         memory = memory[-500:]
     session['memory'] = memory
     session['last_active'] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+    logger.debug(f"Updated memory in Redis: {memory}")
 
 @app.route('/')
 def home():
+    logger.info("Home route accessed")
     return 'JARVIS backend is running!'
 
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
+        logger.info("Received request to /chat")
         user_input = request.json.get("message")
+        logger.debug(f"User input: {user_input}")
         user_id = get_user_id()
         memory = get_memory()
 
-        # अगर input harmful नहीं है, तो memory में add करें
         if not is_harmful(user_input):
             memory.append(f"**User:** {user_input}")
 
-        # यदि user ने "maine pdha nhi" कहा है, तो extra clarification instruction जोड़ें
+        # "maine pdha nhi" के लिए अतिरिक्त निर्देश
         extra_instruction = ""
-        if user_input.strip().lower() == "maine pdha nhi":
-            extra_instruction = "\n**कृपया स्पष्ट करें:** आपने कौन सी जानकारी मिस कर दी है? क्या आपको कहानी का summary चाहिए या किसी विशेष भाग को फिर से सुनना है?\n"
+        if user_input.strip().lower() == "maine pdha nhi" and memory:
+            last_jarvis_response = next((m for m in reversed(memory) if m.startswith("**JARVIS:**")), None)
+            if last_jarvis_response:
+                extra_instruction = f"\n**कृपया स्पष्ट करें:** आपने मेरे पिछले जवाब को मिस किया: {last_jarvis_response}. क्या आपको इसका संक्षेप चाहिए या कुछ और समझना है?\n"
 
-        # Memory context build: यहां हम last 500 messages का context use कर रहे हैं
-        memory_context = "\n".join(memory[-500:])
+        # मेमोरी कॉन्टेक्स्ट: पिछले 50 मैसेज या संक्षेप
+        memory_context = "\n".join(memory[-50:]) if memory else "कोई पिछली बातचीत नहीं।"
         full_prompt = f"""{jarvis_prompt}
 
 ---
 
-### अब तक user और JARVIS की बातचीत:
+### अब तक की बातचीत:
 {memory_context}
 {extra_instruction}
-**निर्देश:** पिछले मैसेजेस को ध्यान में रखते हुए यूज़र के इनपुट का जवाब दो।
+
+**निर्देश:**  
+- ऊपर दी गई बातचीत को ध्यान में रखकर जवाब दो।  
+- अगर कोई पिछली बातचीत नहीं है, तो नई शुरुआत कर।  
+- यूज़र के इनपुट को पिछले मैसेजेस से जोड़कर समझने की कोशिश कर।  
+- बातचीत को दोस्ताना और सिलसिलेवार रख।
 
 **User:** "{user_input}"
 **JARVIS:**"""
 
-        # Final prompt log for debugging
-        print("Final Prompt:", full_prompt)
-
+        logger.debug(f"Full prompt sent to Gemini: {full_prompt}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
         response = requests.post(url, json=payload, timeout=10)
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        logger.debug(f"Gemini reply: {reply}")
 
-        memory.append(f"**JARVIS:** {reply}")
+        # जवाब को संक्षेप में स्टोर करें
+        summarized_reply = summarize_response(reply)
+        memory.append(summarized_reply)
         update_memory(memory)
 
         resp = make_response(jsonify({"reply": reply}))
         resp.set_cookie("user_id", user_id, max_age=60*60*24*30)
+        logger.info("Chat response sent")
         return resp
 
     except Exception as e:
-        print("Chat Error:", e)
+        logger.error(f"Chat Error: {str(e)}")
         return jsonify({"reply": "माफ़ करना, कुछ गड़बड़ हो गई है। थोड़ी देर बाद फिर कोशिश करो।"}), 500
 
 if __name__ == '__main__':
