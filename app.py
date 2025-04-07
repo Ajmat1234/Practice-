@@ -65,7 +65,8 @@ jarvis_prompt = """
    - `> Blockquote`  
    - `<span style="color: #FF5733;">Colored Text</span>`
 
-**निदेश:** यदि user "maine pdha nhi" कहता है, तो ye samjho ki usne AI द्वारा sunayi gayi kahani ko nahi padha. Aise case me, ya to kahani ka summary do ya usse clarify karo ki kis part mein dikkat hai.
+**निदेश:**  
+यदि user "maine pdha nhi" कहता है, तो समझो कि उसने AI द्वारा सुनाई गई कहानी (या उस response) को मिस कर दिया है। ऐसे मामले में, या तो कहानी का संक्षिप्त सारांश दो या फिर पूछो कि कौन सा हिस्सा समझ में नहीं आया।
 """
 
 # प्रतिबंधित शब्दों की सूची (आप यहाँ और शब्द जोड़ सकते हैं)
@@ -114,10 +115,16 @@ def chat():
         user_id = get_user_id()
         memory = get_memory()
 
+        # अगर input harmful नहीं है, तो memory में add करें
         if not is_harmful(user_input):
             memory.append(f"**User:** {user_input}")
 
-        # Memory context build (अभी सबhi messages include kar rahe hain - last 500 messages)
+        # यदि user ने "maine pdha nhi" कहा है, तो extra clarification instruction जोड़ें
+        extra_instruction = ""
+        if user_input.strip().lower() == "maine pdha nhi":
+            extra_instruction = "\n**कृपया स्पष्ट करें:** आपने कौन सी जानकारी मिस कर दी है? क्या आपको कहानी का summary चाहिए या किसी विशेष भाग को फिर से सुनना है?\n"
+
+        # Memory context build: यहां हम last 500 messages का context use कर रहे हैं
         memory_context = "\n".join(memory[-500:])
         full_prompt = f"""{jarvis_prompt}
 
@@ -125,8 +132,8 @@ def chat():
 
 ### अब तक user और JARVIS की बातचीत:
 {memory_context}
-
-**निर्देश:** पिछले मैसेजेस को ध्यान में रखते हुए यूज़र के इनपुट का जवाब दो। अगर यूज़र कुछ अस्पष्ट कहे (जैसे "मैंने पढ़ा नहीं"), तो पिछले मैसेज के आधार पर समझने की कोशिश करो कि वो किस बारे में बात कर रहा है।
+{extra_instruction}
+**निर्देश:** पिछले मैसेजेस को ध्यान में रखते हुए यूज़र के इनपुट का जवाब दो।
 
 **User:** "{user_input}"
 **JARVIS:**"""
@@ -140,7 +147,6 @@ def chat():
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
 
         memory.append(f"**JARVIS:** {reply}")
-
         update_memory(memory)
 
         resp = make_response(jsonify({"reply": reply}))
