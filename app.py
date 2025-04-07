@@ -1,17 +1,38 @@
 from flask import Flask, request, jsonify, session, make_response
 from flask_cors import CORS
+from flask_session import Session  # Redis के लिए सेशन मैनेजमेंट
 import requests
 import re
 import uuid
 import os
 from datetime import datetime, timedelta
+import redis  # Redis क्लाइंट
 
 app = Flask(__name__)
-app.secret_key = "random_secret_key_for_session"
+
+# मजबूत Secret Key (Render.com पर इसे पर्यावरण चर में डालें)
+app.secret_key = os.getenv("SECRET_KEY", "e4b9f8c2-1a5d-4f8e-9b3a-7c6d2e8f9a1b")
+
+# CORS सेटअप
 CORS(app)
 
+# Redis सेशन कॉन्फ़िगरेशन
+app.config['SESSION_TYPE'] = 'redis'
+app.config['SESSION_PERMANENT'] = False
+app.config['SESSION_USE_SIGNER'] = True
+app.config['SESSION_REDIS'] = redis.Redis(
+    host='redis-14826.c264.ap-south-1-1.ec2.redns.redis-cloud.com',
+    port=14826,
+    username='default',
+    password='Z1KQwiBjjFPk8pNCFGv0rnOUSSh6uVXw',
+    ssl=False  # फ्री प्लान में SSL डिफ़ॉल्ट नहीं होता, अगर जरूरत हो तो True करें
+)
+Session(app)
+
+# Gemini API Key पर्यावरण चर से लें
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# JARVIS प्रॉम्प्ट
 jarvis_prompt = """
 **तुम JARVIS हो – Just A Rather Very Intelligent System.**
 
@@ -49,6 +70,7 @@ jarvis_prompt = """
 **कृपया अपने जवाब को उपरोक्त फॉर्मेटिंग में प्रस्तुत करें।**
 """
 
+# प्रतिबंधित शब्दों की सूची (आप यहाँ और शब्द जोड़ सकते हैं)
 banned_patterns = [
     r'\b(?:अनुचितशब्द1|अनुचितशब्द2|गाली1|गाली2)\b'
 ]
@@ -93,14 +115,16 @@ def chat():
         if not is_harmful(user_input):
             memory.append(f"**User:** {user_input}")
 
-        # Memory context build
-        memory_context = "\n".join(memory)
+        # Memory context build (पिछले 5 मैसेज ही पास करें)
+        memory_context = "\n".join(memory[-5:])
         full_prompt = f"""{jarvis_prompt}
 
 ---
 
 ### अब तक user और JARVIS की बातचीत:
 {memory_context}
+
+**निर्देश:** पिछले मैसेजेस को ध्यान में रखते हुए यूज़र के इनपुट का जवाब दो। अगर यूज़र कुछ अस्पष्ट कहे (जैसे "मैंने पढ़ा नहीं"), तो पिछले मैसेज के आधार पर समझने की कोशिश करो कि वो किस बारे में बात कर रहा है।
 
 **User:** "{user_input}"
 **JARVIS:**"""
