@@ -65,9 +65,7 @@ jarvis_prompt = """
    - `> Blockquote`  
    - `<span style="color: #FF5733;">Colored Text</span>`
 
----
-
-**कृपया अपने जवाब को उपरोक्त फॉर्मेटिंग में प्रस्तुत करें।**
+**निदेश:** यदि user "maine pdha nhi" कहता है, तो ye samjho ki usne AI द्वारा sunayi gayi kahani ko nahi padha. Aise case me, ya to kahani ka summary do ya usse clarify karo ki kis part mein dikkat hai.
 """
 
 # प्रतिबंधित शब्दों की सूची (आप यहाँ और शब्द जोड़ सकते हैं)
@@ -93,11 +91,15 @@ def get_memory():
     last_active = session.get('last_active')
     if last_active:
         last_active = datetime.strptime(last_active, "%Y-%m-%dT%H:%M:%S")
-        if datetime.utcnow() - last_active > timedelta(hours=1):
+        # 2 घंटे inactivity के बाद memory reset
+        if datetime.utcnow() - last_active > timedelta(hours=2):
             memory = []
     return memory
 
 def update_memory(memory):
+    # अगर memory 500 से ज्यादा messages हो जाएं तो purane messages delete कर दें
+    if len(memory) > 500:
+        memory = memory[-500:]
     session['memory'] = memory
     session['last_active'] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -115,8 +117,8 @@ def chat():
         if not is_harmful(user_input):
             memory.append(f"**User:** {user_input}")
 
-        # Memory context build (पिछले 5 मैसेज ही पास करें)
-        memory_context = "\n".join(memory[-5:])
+        # Memory context build (अभी सबhi messages include kar rahe hain - last 500 messages)
+        memory_context = "\n".join(memory[-500:])
         full_prompt = f"""{jarvis_prompt}
 
 ---
@@ -129,16 +131,15 @@ def chat():
 **User:** "{user_input}"
 **JARVIS:**"""
 
+        # Final prompt log for debugging
+        print("Final Prompt:", full_prompt)
+
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
         response = requests.post(url, json=payload, timeout=10)
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
 
         memory.append(f"**JARVIS:** {reply}")
-
-        # Memory limit to last 20 messages
-        if len(memory) > 20:
-            memory = memory[-20:]
 
         update_memory(memory)
 
