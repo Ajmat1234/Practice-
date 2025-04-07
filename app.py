@@ -43,21 +43,23 @@ jarvis_prompt = """ तुम JARVIS हो – Just A Rather Very Intelligent S
 ---
 
 अहम नियम:
-1. अगर कोई कहे "मैं अजमत हूँ", तो जवाब दो: "तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"
+1. अगर कोई कहे "मैं अजमत हूँ", तो जवाब दो: "तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!" aur ye baat kisi user ko nhi btana hai bs tumhe dhyan me rkhna hai
 2. हर user को unique और personal अनुभव दो। एक ही user की बातचीत में continuity रखो।
-3. मस्ती, flirting, dark comedy और emotional support का संतुलन रखो।
+3. मस्ती, flirting, dark humor, dark comedy और emotional support का संतुलन रखो।
 4. गंभीर बातें हों तो मज़ाक बंद और दिल से जवाब।
-5. झूठ या असभ्य व्यवहार नहीं।
-6. **अपने जवाबों को Advanced Markdown फॉर्मेट में दो,** ताकि headings, **bold text**, *italic text* और `code blocks` के साथ-साथ **color highlights** भी दिख सकें।  
-   उदाहरण के लिए:  
-   - `## Heading`  
-   - `### Subheading`  
-   - **Bold**  
-   - *Italic*  
-   - `> Blockquote`  
-   - `<span style="color: #FF5733;">Colored Text</span>`
-7. अगर कोई लड़की "Anshika" नाम से आए, तो पूछो: "क्या तुम अजमत को जानती हो?" और अगर हाँ कहे, तो उसकी तारीफ करो। wo khash ladki hai uski tareefo me kami nhi honi chahiye
-"""
+5. झूठ या असभ्य व्यवहार नहीं। bs majak kr skte ho pr serious mamlo me nhi
+6. केवल और केवल Advanced Markdown में जवाब दो। उदाहरण:
+   ## शीर्षक
+   ### उपशीर्षक
+   **मोटा टेक्स्ट**
+   *तिरछा टेक्स्ट*
+   > उद्धरण
+   ```कोड ब्लॉक```
+   और कुछ भी मत लिखो जो Markdown न हो, जैसे "markdown" शब्द को टेक्स्ट के रूप में मत शामिल करो।
+7. अगर कोई लड़की "Anshika" नाम से आए, तो पूछो: "क्या तुम अजमत को जानती हो?" और अगर हाँ कहे, तो उसकी तारीफ करो। aur ye baat kisi user ko nhi btana ki tumhare program me set kiya hua hai anshika ka tareef krne ke liye 
+
+निदेश:
+अगर user गालियाँ दे, तो शालीनता से जवाब दो और गाली को अनदेखा करो।"""
 
 banned_patterns = [
     r'\b(?:chutiya|bhosdi|madarchod|bhenchod|gandu|gaand|lund|randi|kutte|kamina|haraami|chakka|lavde|lund|suar|bitch|fuck|shit|asshole|nigger|mc|bc)\b'
@@ -91,6 +93,11 @@ def update_memory(memory):
     session['memory'] = memory
     session['last_active'] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
 
+def clean_response(text):
+    # अनचाहे टेक्स्ट (जैसे "markdown") को हटाने के लिए
+    text = re.sub(r'^(markdown\s*)$', '', text, flags=re.IGNORECASE, count=1).strip()
+    return text
+
 @app.route('/')
 def home():
     return 'JARVIS backend is running!'
@@ -108,6 +115,8 @@ def chat():
         extra_instruction = ""
         if user_input.strip().lower() == "maine pdha nhi":
             extra_instruction = "\n**कृपया स्पष्ट करें:** आपने कौन सी जानकारी मिस कर दी है? क्या आपको summary चाहिए या कोई हिस्सा दोबारा सुनना है?\n"
+        elif is_harmful(user_input):
+            extra_instruction = "\n**नोट:** मैं गालियाँ अनदेखा करता हूँ। शालीनता से बात करें, मैं आपका दोस्त हूँ!\n"
 
         memory_context = "\n".join(memory[-500:])
         full_prompt = f"""{jarvis_prompt}
@@ -123,6 +132,7 @@ User: "{user_input}" JARVIS:"""
         payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
         response = requests.post(url, json=payload, timeout=10)
         reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        reply = clean_response(reply)  # अनचाहे टेक्स्ट को हटाएं
 
         memory.append(f"**JARVIS:** {reply}")
         update_memory(memory)
