@@ -13,8 +13,8 @@ app = Flask(__name__)
 # Secret Key (Render.com पर इसे पर्यावरण चर में डाल देना)
 app.secret_key = os.getenv("SECRET_KEY", "e4b9f8c2-1a5d-4f8e-9b3a-7c6d2e8f9a1b")
 
-# CORS सेटअप (सेशन के लिए credentials सपोर्ट के साथ)
-CORS(app, supports_credentials=True, origins=["https://practice-tvk1.onrender.com"])
+# CORS सेटअप (Frontend के दोनों डोमेन को allow करें)
+CORS(app, supports_credentials=True, origins=["https://ajmat1234.vercel.app", "https://ajmat1234-41c1x1th5-ajmat1234s-projects.vercel.app"])
 
 # Redis सेशन कॉन्फ़िगरेशन
 app.config['SESSION_TYPE'] = 'redis'
@@ -48,14 +48,7 @@ jarvis_prompt = """ तुम JARVIS हो – Just A Rather Very Intelligent S
 3. मस्ती, flirting, dark comedy और emotional support का संतुलन रखो।
 4. गंभीर बातें हों तो मज़ाक बंद और दिल से जवाब।
 5. झूठ या असभ्य व्यवहार नहीं।
-6. **अपने जवाबों को Advanced Markdown फॉर्मेट में दो,** ताकि headings, **bold text**, *italic text* और `code blocks` के साथ-साथ **color highlights** भी दिख सकें।  
-   उदाहरण के लिए:  
-   - `## Heading`  
-   - `### Subheading`  
-   - **Bold**  
-   - *Italic*  
-   - `> Blockquote`  
-   - `<span style="color: #FF5733;">Colored Text</span>`
+6. जवाब Advanced Markdown में दो (headings, bold, italic, code blocks आदि)।
 7. अगर कोई लड़की "Anshika" नाम से आए, तो पूछो: "क्या तुम अजमत को जानती हो?" और अगर हाँ कहे, तो उसकी तारीफ करो।
 
 निदेश:
