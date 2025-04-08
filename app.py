@@ -1,59 +1,44 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import requests
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import openai
+import os
+import asyncio
 
-app = Flask(__name__)
+app = FastAPI()
 
-# CORS setup for frontend
-CORS(app, supports_credentials=True, origins=[
-    "https://work-lyart-rho.vercel.app",
-    "https://work-ajmat1234s-projects.vercel.app"
-])
+# CORS for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-JARVIS_PROMPT = """
-तुम JARVIS हो – Just A Rather Very Intelligent System।  
-मुझे हिंदी में लिखे हुए डॉक्यूमेंट्स दिए जाएंगे, जिनमें टाइपिंग मिस्टेक्स हो सकती हैं। तुम्हारा काम है:  
-1. सिर्फ उन शब्दों को सुधारना जो टाइपिंग मिस्टेक की वजह से गलत हैं।  
-2. किसी भी वाक्य को बदलना नहीं है, न ही कोई नया टेक्स्ट जोड़ना या हटाना।  
-3. पूरा डॉक्यूमेंट वैसे का वैसा रखना, बस गलत शब्दों को ठीक करना।  
-4. सुधार के बाद पूरा डॉक्यूमेंट मुझे वापस भेजना।  
-"""
+# API Key
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-@app.route('/')
-def home():
-    return 'JARVIS backend is live!'
+class Message(BaseModel):
+    message: str
 
-@app.route('/chat', methods=['POST'])
-def chat():
+@app.post("/chat")
+async def chat(msg: Message):
     try:
-        user_input = request.json.get("message")
-        if user_input.strip().lower() == "wake up":
-            return jsonify({"reply": "Backend is awake!"})
-
-        full_prompt = f"""{JARVIS_PROMPT}
-
-        मेरा डॉक्यूमेंट:
-        {user_input}
-
-        सुधार के बाद पूरा डॉक्यूमेंट लौटाएं।
-        """
-
-        response = requests.post(
-            "https://work-4ec6.onrender.com/gpt",
-            json={"message": full_prompt},
-            timeout=60  # Increased timeout
+        response = await asyncio.wait_for(
+            openai.ChatCompletion.acreate(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": msg.message}]
+            ),
+            timeout=55  # Increased timeout
         )
-
-        result = response.json()
-        reply = result.get("reply", "कोई जवाब नहीं मिला।")
-
-        return jsonify({"reply": reply})
-
+        reply = response.choices[0].message.content.strip()
+        return {"reply": reply}
+    except asyncio.TimeoutError:
+        return {"reply": "सर्वर बहुत व्यस्त है। कृपया थोड़ी देर बाद प्रयास करें।"}
     except Exception as e:
-        print("Error:", e)
-        return jsonify({"reply": "सर्वर में कोई गड़बड़ हुई। थोड़ी देर बाद फिर से कोशिश करें।"}), 500
+        return {"reply": f"त्रुटि: {str(e)}"}
 
-if __name__ == '__main__':
-    import os
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+# Dummy call endpoint
+@app.get("/ping")
+def ping():
+    return {"status": "awake"}
