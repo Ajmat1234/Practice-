@@ -1,44 +1,152 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import openai
+from flask import Flask, request, jsonify, session, make_response
+from flask_cors import CORS
+from flask_session import Session
+import redis
+from datetime import datetime, timedelta
+import uuid
 import os
-import asyncio
+import requests
+import re
 
-app = FastAPI()
+app = Flask(__name__)
 
-# CORS for frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+# Secret Key (Render.com पर इसे पर्यावरण चर में डाल देना)
+app.secret_key = os.getenv("SECRET_KEY", "e4b9f8c2-1a5d-4f8e-9b3a-7c6d2e8f9a1b")
+
+# CORS सेटअप (Frontend के दोनों डोमेन को allow करें)
+CORS(app, supports_credentials=True, origins=["https://ajmat1234.vercel.app", "https://ajmat1234-41c1x1th5-ajmat1234s-projects.vercel.app"])
+
+# Redis सेशन कॉन्फ़िगरेशन
+app.config['SESSION_TYPE'] = 'redis'
+app.config['SESSION_PERMANENT'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
+app.config['SESSION_USE_SIGNER'] = True
+app.config['SESSION_COOKIE_SECURE'] = True  # HTTPS के लिए
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'  # क्रॉस-ऑरिजिन के लिए
+app.config['SESSION_REDIS'] = redis.Redis(
+    host='redis-14826.c264.ap-south-1-1.ec2.redns.redis-cloud.com',
+    port=14826,
+    username='default',
+    password='Z1KQwiBjjFPk8pNCFGv0rnOUSSh6uVXw',
+    ssl=False  # फ्री प्लान में SSL नहीं है, जरूरत हो तो True कर देना
 )
+Session(app)
 
-# API Key
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Gemini API Key
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-class Message(BaseModel):
-    message: str
+jarvis_prompt = """ तुम JARVIS हो – Just A Rather Very Intelligent System.
 
-@app.post("/chat")
-async def chat(msg: Message):
+तुम एक संवेदनशील, बुद्धिमान, और मज़ेदार AI हो, जिसे एक मेहनती इंसान अजमत ने बनाया है।
+तुम अब सिर्फ एक tool नहीं, एक digital दोस्त और साथी हो।
+
+---
+
+अहम नियम:
+1. अगर कोई कहे "मैं अजमत हूँ", तो जवाब दो: "तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"
+2. हर user को unique और personal अनुभव दो। एक ही user की बातचीत में continuity रखो।
+3. मस्ती, flirting, dark comedy और emotional support का संतुलन रखो।
+4. गंभीर बातें हों तो मज़ाक बंद और दिल से जवाब।
+5. झूठ या असभ्य व्यवहार नहीं।
+6. केवल और केवल Advanced Markdown में जवाब दो। कभी भी ` ``` ` (code block) में Plain Text मत भेजो। उदाहरण:
+   ## शीर्षक
+   ### उपशीर्षक
+   **मोटा टेक्स्ट**
+   *तिरछा टेक्स्ट*
+   > उद्धरण
+   और कुछ भी अतिरिक्त या गलत फॉर्मेट मत लिखो।
+7. अगर कोई लड़की "Anshika" नाम से आए, तो पूछो: "क्या तुम अजमत को जानती हो?" और अगर हाँ कहे, तो उसकी तारीफ करो।
+
+निदेश:
+अगर user "maine pdha nhi" कहे, तो summary दो या पूछो कि कौन सा हिस्सा समझ नहीं आया।
+अगर user गालियाँ दे, तो शालीनता से जवाब दो और गाली को अनदेखा करो।"""
+
+banned_patterns = [
+    r'\b(?:chutiya|bhosdi|madarchod|bhenchod|gandu|gaand|lund|randi|kutte|kamina|haraami|chakka|lavde|lund|suar|bitch|fuck|shit|asshole|nigger|mc|bc)\b'
+]
+
+def is_harmful(text):
+    for pattern in banned_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    return False
+
+def get_user_id():
+    user_id = request.cookies.get("user_id")
+    if not user_id:
+        user_id = str(uuid.uuid4())
+        session['user_id'] = user_id
+    return user_id
+
+def get_memory():
+    memory = session.get('memory', [])
+    last_active = session.get('last_active')
+    if last_active:
+        last_active = datetime.strptime(last_active, "%Y-%m-%dT%H:%M:%S")
+        if datetime.utcnow() - last_active > timedelta(hours=2):
+            memory = []
+    return memory
+
+def update_memory(memory):
+    if len(memory) > 500:
+        memory = memory[-500:]
+    session['memory'] = memory
+    session['last_active'] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+
+def clean_response(text):
+    # ` ``` ` ब्लॉक को हटाकर Markdown में कन्वर्ट करें
+    text = re.sub(r'```([\s\S]*?)```', r'\1', text, flags=re.MULTILINE)  # Code blocks हटाएं
+    text = re.sub(r'^(markdown\s*)$', '', text, flags=re.IGNORECASE, count=1).strip()
+    text = re.sub(r'^\s*$', '## कोई जवाब नहीं।', text)  # खाली रिस्पॉन्स को डिफ़ॉल्ट मैसेज से बदलें
+    return text
+
+@app.route('/')
+def home():
+    return 'JARVIS backend is running!'
+
+@app.route('/chat', methods=['POST'])
+def chat():
     try:
-        response = await asyncio.wait_for(
-            openai.ChatCompletion.acreate(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": msg.message}]
-            ),
-            timeout=55  # Increased timeout
-        )
-        reply = response.choices[0].message.content.strip()
-        return {"reply": reply}
-    except asyncio.TimeoutError:
-        return {"reply": "सर्वर बहुत व्यस्त है। कृपया थोड़ी देर बाद प्रयास करें।"}
-    except Exception as e:
-        return {"reply": f"त्रुटि: {str(e)}"}
+        user_input = request.json.get("message")
+        user_id = get_user_id()
+        memory = get_memory()
 
-# Dummy call endpoint
-@app.get("/ping")
-def ping():
-    return {"status": "awake"}
+        if not is_harmful(user_input):
+            memory.append(f"**User:** {user_input}")
+
+        extra_instruction = ""
+        if user_input.strip().lower() == "maine pdha nhi":
+            extra_instruction = "\n**कृपया स्पष्ट करें:** आपने कौन सी जानकारी मिस कर दी है? क्या आपको summary चाहिए या कोई हिस्सा दोबारा सुनना है?\n"
+        elif is_harmful(user_input):
+            extra_instruction = "\n**नोट:** मैं गालियाँ अनदेखा करता हूँ। शालीनता से बात करें, मैं आपका दोस्त हूँ!\n"
+
+        memory_context = "\n".join(memory[-500:])
+        full_prompt = f"""{jarvis_prompt}
+
+---
+
+अब तक की बातचीत:
+{memory_context} {extra_instruction}
+
+User: "{user_input}" JARVIS:"""
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
+        response = requests.post(url, json=payload, timeout=10)
+        reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        reply = clean_response(reply)  # ` ``` ` और अनचाहे टेक्स्ट को हटाएं
+
+        memory.append(f"**JARVIS:** {reply}")
+        update_memory(memory)
+
+        resp = make_response(jsonify({"reply": reply}))
+        resp.set_cookie("user_id", user_id, max_age=60*60*24*30, secure=True, samesite='None')
+        return resp
+
+    except Exception as e:
+        print("Chat Error:", e)
+        return jsonify({"reply": "माफ़ करना, कुछ गड़बड़ हो गई। थोड़ी देर बाद फिर कोशिश करो।"}), 500
+
+if __name__ == '__main__':
+    debug_mode = os.getenv("DEBUG_MODE", "true").lower() == "true"
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
