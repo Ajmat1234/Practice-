@@ -3,5 +3,4 @@ flask-cors
 requests
 gunicorn
 flask-session
-redis
 fastapi
