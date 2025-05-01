@@ -8,8 +8,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install ffmpeg for pydub
-RUN apt-get update && apt-get install -y ffmpeg && apt-get clean
+# Install ffmpeg and espeak-ng
+RUN apt-get update && apt-get install -y ffmpeg espeak-ng && apt-get clean
 
 # Copy the rest of the application
 COPY . .
@@ -17,5 +17,5 @@ COPY . .
 # Expose port explicitly
 EXPOSE 10000
 
-# Command to run the application
-CMD ["python", "app.py"]
+# Command to run the application with gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "1", "--timeout", "120", "app:app"]
