@@ -8,6 +8,9 @@ import backoff
 
 app = Flask(__name__)
 
+# Create output directory before logging setup
+Path("output").mkdir(parents=True, exist_ok=True)
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -35,7 +38,7 @@ except Exception as e:
     logger.error(f"Failed to connect to Redis: {str(e)}")
     raise
 
-# Output directory
+# Output directory for audio files
 Path("output/audio").mkdir(parents=True, exist_ok=True)
 
 @app.route('/ping', methods=['POST'])
