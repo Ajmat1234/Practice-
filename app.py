@@ -9,14 +9,23 @@ from threading import Lock
 app = Flask(__name__)
 generation_lock = Lock()
 
+# Ensure log directory exists
+log_dir = "output"
+os.makedirs(log_dir, exist_ok=True)
+
 # Setup logging
-with open("logging_config.yaml", "r") as f:
-    config = yaml.safe_load(f.read())
-    logging.config.dictConfig(config)
+try:
+    with open("logging_config.yaml", "r") as f:
+        config = yaml.safe_load(f.read())
+        logging.config.dictConfig(config)
+except Exception as e:
+    # Fallback to basic logging if config fails
+    logging.basicConfig(level=logging.INFO)
+    logging.error(f"Failed to load logging config: {str(e)}")
 
 logger = logging.getLogger("audioGenLogger")
 
-# Ensure output directory exists
+# Ensure audio output directory exists
 os.makedirs("output/audio", exist_ok=True)
 
 @app.route("/ping", methods=["GET"])
