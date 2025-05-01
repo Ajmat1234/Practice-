@@ -3,7 +3,7 @@ import os
 import logging
 import logging.config
 import yaml
-from scripts.generate_audio import generate_coqui_audio
+from scripts.generate_audio import generate_espeak_audio
 from threading import Lock
 
 app = Flask(__name__)
@@ -37,7 +37,7 @@ def generate_audio():
             video_id = data["video_id"]
 
             logger.info(f"[*] Starting audio generation for Video {video_id}")
-            audio_path = generate_coqui_audio(text, video_id)
+            audio_path = generate_espeak_audio(text, video_id)
             logger.info(f"[*] Audio generation completed for Video {video_id}")
 
             return jsonify({
