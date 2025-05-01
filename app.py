@@ -1,75 +1,95 @@
 from flask import Flask, request, jsonify, send_file
 import os
+import redis
 import logging
-import logging.config
-import yaml
-from scripts.generate_audio import generate_espeak_audio
-from threading import Lock
+from pathlib import Path
+from gtts import gTTS, gTTSError
+import backoff
 
 app = Flask(__name__)
-generation_lock = Lock()
 
-# Ensure log directory exists
-log_dir = "output"
-os.makedirs(log_dir, exist_ok=True)
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    filename='output/audio_gen_detailed.log',
+    filemode='a',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('audioGenLogger')
 
-# Setup logging
+# Redis setup
+REDIS_HOST = "redis-10583.c301.ap-south-1-1.ec2.redns.redis-cloud.com"
+REDIS_PORT = 10583
+REDIS_PASSWORD = "qBXuT3Fb37eRsVn55NWCbYCcbgV1T8oL"
 try:
-    with open("logging_config.yaml", "r") as f:
-        config = yaml.safe_load(f.read())
-        logging.config.dictConfig(config)
+    redis_client = redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        password=REDIS_PASSWORD,
+        decode_responses=True,
+        ssl=False
+    )
+    redis_client.ping()
+    logger.info("Connected to Redis successfully")
 except Exception as e:
-    # Fallback to basic logging if config fails
-    logging.basicConfig(level=logging.INFO)
-    logging.error(f"Failed to load logging config: {str(e)}")
+    logger.error(f"Failed to connect to Redis: {str(e)}")
+    raise
 
-logger = logging.getLogger("audioGenLogger")
+# Output directory
+Path("output/audio").mkdir(parents=True, exist_ok=True)
 
-# Ensure audio output directory exists
-os.makedirs("output/audio", exist_ok=True)
-
-@app.route("/ping", methods=["GET"])
+@app.route('/ping', methods=['POST'])
 def ping():
     logger.info("Ping received, service is alive")
-    return jsonify({"status": "alive"}), 200
+    return jsonify({"status": "success", "message": "Service is alive"})
 
-@app.route("/generate_audio", methods=["POST"])
+@backoff.on_exception(backoff.expo, (gTTSError, Exception), max_tries=5)
+@app.route('/generate_audio', methods=['POST'])
 def generate_audio():
+    data = request.get_json()
+    text = data.get('text')
+    video_id = data.get('video_id')
+    
+    if not text or not video_id:
+        logger.error("Missing text or video_id in request")
+        return jsonify({"status": "error", "message": "Missing text or video_id"}), 400
+    
+    logger.info(f"[*] Starting audio generation for Video {video_id}")
+    logger.info(f"Generating Hindi audio for Video {video_id} using gTTS")
+    
+    output_path = f"output/audio/audio_{video_id}_full.mp3"
+    
     try:
-        with generation_lock:
-            data = request.get_json()
-            if not data or "text" not in data or "video_id" not in data:
-                logger.error("Invalid request: 'text' and 'video_id' are required")
-                return jsonify({"error": "Invalid request: 'text' and 'video_id' are required"}), 400
-
-            text = data["text"]
-            video_id = data["video_id"]
-
-            logger.info(f"[*] Starting audio generation for Video {video_id}")
-            audio_path = generate_espeak_audio(text, video_id)
-            logger.info(f"[*] Audio generation completed for Video {video_id}")
-
-            return jsonify({
-                "status": "success",
-                "video_id": video_id,
-                "audio_path": audio_path
-            }), 200
-
+        tts = gTTS(text=text, lang='hi', slow=True)
+        tts.save(output_path)
+        
+        redis_client.set(f"audio:{video_id}", output_path)
+        logger.info(f"Full audio generated at {output_path}")
+        logger.info(f"[*] Audio generation completed for Video {video_id}")
+        return jsonify({"status": "success", "message": "Audio generated"})
+    except gTTSError as e:
+        if "429" in str(e):
+            logger.error(f"gTTS rate limit hit for Video {video_id}")
+            return jsonify({"status": "error", "message": "Rate limit exceeded"}), 429
+        logger.error(f"Failed to generate audio for Video {video_id}: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
     except Exception as e:
-        logger.error(f"Generation failed for Video {video_id}: {str(e)}")
-        return jsonify({"error": f"Generation failed: {str(e)}"}), 500
+        logger.error(f"Failed to generate audio for Video {video_id}: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route("/download_audio/<video_id>", methods=["GET"])
+@app.route('/download_audio/<video_id>', methods=['GET'])
 def download_audio(video_id):
     try:
-        audio_path = f"output/audio/audio_{video_id}_full.mp3"
-        if not os.path.exists(audio_path):
+        output_path = redis_client.get(f"audio:{video_id}")
+        if not output_path or not os.path.exists(output_path):
             logger.error(f"Audio file not found for Video {video_id}")
-            return jsonify({"error": "Audio file not found"}), 404
-        return send_file(audio_path, as_attachment=True)
+            return jsonify({"status": "error", "message": "Audio file not found"}), 404
+        
+        logger.info(f"Downloading audio for Video {video_id} from {output_path}")
+        return send_file(output_path, as_attachment=True)
     except Exception as e:
         logger.error(f"Failed to download audio for Video {video_id}: {str(e)}")
-        return jsonify({"error": f"Download failed: {str(e)}"}), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
