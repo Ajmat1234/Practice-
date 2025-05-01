@@ -1,11 +1,12 @@
 services:
   - type: web
     name: coqui-tts-audio-gen
-    env: docker
+    env: python
     repo: https://github.com/<your-username>/coqui-tts-audio-gen
     branch: main
-    dockerCommand: docker build -t coqui-tts-audio-gen .
     startCommand: gunicorn --bind 0.0.0.0:10000 --workers 1 --timeout 120 app:app
     envVars:
       - key: PORT
         value: 10000
+      - key: PYTHON_VERSION
+        value: 3.10
