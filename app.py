@@ -63,8 +63,9 @@ def generate_audio():
         tts = gTTS(text=text, lang='hi', slow=True)
         tts.save(output_path)
         
-        redis_client.set(f"audio:{video_id}", output_path)
-        logger.info(f"Full audio generated at {output_path}")
+        # Set Redis key with TTL (3600 seconds = 1 hour)
+        redis_client.setex(f"audio:{video_id}", 3600, output_path)
+        logger.info(f"Full audio generated at {output_path} with TTL of 3600 seconds")
         logger.info(f"[*] Audio generation completed for Video {video_id}")
         return jsonify({"status": "success", "message": "Audio generated"})
     except gTTSError as e:
