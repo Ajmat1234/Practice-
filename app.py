@@ -19,6 +19,11 @@ logger = logging.getLogger("audioGenLogger")
 # Ensure output directory exists
 os.makedirs("output/audio", exist_ok=True)
 
+@app.route("/ping", methods=["GET"])
+def ping():
+    logger.info("Ping received, service is alive")
+    return jsonify({"status": "alive"}), 200
+
 @app.route("/generate_audio", methods=["POST"])
 def generate_audio():
     try:
@@ -44,6 +49,18 @@ def generate_audio():
     except Exception as e:
         logger.error(f"Generation failed for Video {video_id}: {str(e)}")
         return jsonify({"error": f"Generation failed: {str(e)}"}), 500
+
+@app.route("/download_audio/<video_id>", methods=["GET"])
+def download_audio(video_id):
+    try:
+        audio_path = f"output/audio/audio_{video_id}_full.mp3"
+        if not os.path.exists(audio_path):
+            logger.error(f"Audio file not found for Video {video_id}")
+            return jsonify({"error": "Audio file not found"}), 404
+        return send_file(audio_path, as_attachment=True)
+    except Exception as e:
+        logger.error(f"Failed to download audio for Video {video_id}: {str(e)}")
+        return jsonify({"error": f"Download failed: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
