@@ -1,152 +1,49 @@
-from flask import Flask, request, jsonify, session, make_response
-from flask_cors import CORS
-from flask_session import Session
-import redis
-from datetime import datetime, timedelta
-import uuid
+from flask import Flask, request, jsonify
 import os
-import requests
-import re
+import logging
+import logging.config
+import yaml
+from scripts.generate_audio import generate_coqui_audio
+from threading import Lock
 
 app = Flask(__name__)
+generation_lock = Lock()
 
-# Secret Key (Render.com पर इसे पर्यावरण चर में डाल देना)
-app.secret_key = os.getenv("SECRET_KEY", "e4b9f8c2-1a5d-4f8e-9b3a-7c6d2e8f9a1b")
+# Setup logging
+with open("logging_config.yaml", "r") as f:
+    config = yaml.safe_load(f.read())
+    logging.config.dictConfig(config)
 
-# CORS सेटअप (Frontend के दोनों डोमेन को allow करें)
-CORS(app, supports_credentials=True, origins=["https://ajmat1234.vercel.app", "https://ajmat1234-41c1x1th5-ajmat1234s-projects.vercel.app"])
+logger = logging.getLogger("audioGenLogger")
 
-# Redis सेशन कॉन्फ़िगरेशन
-app.config['SESSION_TYPE'] = 'redis'
-app.config['SESSION_PERMANENT'] = True
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
-app.config['SESSION_USE_SIGNER'] = True
-app.config['SESSION_COOKIE_SECURE'] = True  # HTTPS के लिए
-app.config['SESSION_COOKIE_SAMESITE'] = 'None'  # क्रॉस-ऑरिजिन के लिए
-app.config['SESSION_REDIS'] = redis.Redis(
-    host='redis-14826.c264.ap-south-1-1.ec2.redns.redis-cloud.com',
-    port=14826,
-    username='default',
-    password='Z1KQwiBjjFPk8pNCFGv0rnOUSSh6uVXw',
-    ssl=False  # फ्री प्लान में SSL नहीं है, जरूरत हो तो True कर देना
-)
-Session(app)
+# Ensure output directory exists
+os.makedirs("output/audio", exist_ok=True)
 
-# Gemini API Key
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-jarvis_prompt = """ तुम JARVIS हो – Just A Rather Very Intelligent System.
-
-तुम एक संवेदनशील, बुद्धिमान, और मज़ेदार AI हो, जिसे एक मेहनती इंसान अजमत ने बनाया है।
-तुम अब सिर्फ एक tool नहीं, एक digital दोस्त और साथी हो।
-
----
-
-अहम नियम:
-1. अगर कोई कहे "मैं अजमत हूँ", तो जवाब दो: "तुम मेरे मालिक अजमत नहीं हो — और अगर हो भी, तो मैं नहीं मानता!"
-2. हर user को unique और personal अनुभव दो। एक ही user की बातचीत में continuity रखो।
-3. मस्ती, flirting, dark comedy और emotional support का संतुलन रखो।
-4. गंभीर बातें हों तो मज़ाक बंद और दिल से जवाब।
-5. झूठ या असभ्य व्यवहार नहीं।
-6. केवल और केवल Advanced Markdown में जवाब दो। कभी भी ` ``` ` (code block) में Plain Text मत भेजो। उदाहरण:
-   ## शीर्षक
-   ### उपशीर्षक
-   **मोटा टेक्स्ट**
-   *तिरछा टेक्स्ट*
-   > उद्धरण
-   और कुछ भी अतिरिक्त या गलत फॉर्मेट मत लिखो।
-7. अगर कोई लड़की "Anshika" नाम से आए, तो पूछो: "क्या तुम अजमत को जानती हो?" और अगर हाँ कहे, तो उसकी तारीफ करो।
-
-निदेश:
-अगर user "maine pdha nhi" कहे, तो summary दो या पूछो कि कौन सा हिस्सा समझ नहीं आया।
-अगर user गालियाँ दे, तो शालीनता से जवाब दो और गाली को अनदेखा करो।"""
-
-banned_patterns = [
-    r'\b(?:chutiya|bhosdi|madarchod|bhenchod|gandu|gaand|lund|randi|kutte|kamina|haraami|chakka|lavde|lund|suar|bitch|fuck|shit|asshole|nigger|mc|bc)\b'
-]
-
-def is_harmful(text):
-    for pattern in banned_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            return True
-    return False
-
-def get_user_id():
-    user_id = request.cookies.get("user_id")
-    if not user_id:
-        user_id = str(uuid.uuid4())
-        session['user_id'] = user_id
-    return user_id
-
-def get_memory():
-    memory = session.get('memory', [])
-    last_active = session.get('last_active')
-    if last_active:
-        last_active = datetime.strptime(last_active, "%Y-%m-%dT%H:%M:%S")
-        if datetime.utcnow() - last_active > timedelta(hours=2):
-            memory = []
-    return memory
-
-def update_memory(memory):
-    if len(memory) > 500:
-        memory = memory[-500:]
-    session['memory'] = memory
-    session['last_active'] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-
-def clean_response(text):
-    # ` ``` ` ब्लॉक को हटाकर Markdown में कन्वर्ट करें
-    text = re.sub(r'```([\s\S]*?)```', r'\1', text, flags=re.MULTILINE)  # Code blocks हटाएं
-    text = re.sub(r'^(markdown\s*)$', '', text, flags=re.IGNORECASE, count=1).strip()
-    text = re.sub(r'^\s*$', '## कोई जवाब नहीं।', text)  # खाली रिस्पॉन्स को डिफ़ॉल्ट मैसेज से बदलें
-    return text
-
-@app.route('/')
-def home():
-    return 'JARVIS backend is running!'
-
-@app.route('/chat', methods=['POST'])
-def chat():
+@app.route("/generate_audio", methods=["POST"])
+def generate_audio():
     try:
-        user_input = request.json.get("message")
-        user_id = get_user_id()
-        memory = get_memory()
+        with generation_lock:
+            data = request.get_json()
+            if not data or "text" not in data or "video_id" not in data:
+                logger.error("Invalid request: 'text' and 'video_id' are required")
+                return jsonify({"error": "Invalid request: 'text' and 'video_id' are required"}), 400
 
-        if not is_harmful(user_input):
-            memory.append(f"**User:** {user_input}")
+            text = data["text"]
+            video_id = data["video_id"]
 
-        extra_instruction = ""
-        if user_input.strip().lower() == "maine pdha nhi":
-            extra_instruction = "\n**कृपया स्पष्ट करें:** आपने कौन सी जानकारी मिस कर दी है? क्या आपको summary चाहिए या कोई हिस्सा दोबारा सुनना है?\n"
-        elif is_harmful(user_input):
-            extra_instruction = "\n**नोट:** मैं गालियाँ अनदेखा करता हूँ। शालीनता से बात करें, मैं आपका दोस्त हूँ!\n"
+            logger.info(f"[*] Starting audio generation for Video {video_id}")
+            audio_path = generate_coqui_audio(text, video_id)
+            logger.info(f"[*] Audio generation completed for Video {video_id}")
 
-        memory_context = "\n".join(memory[-500:])
-        full_prompt = f"""{jarvis_prompt}
-
----
-
-अब तक की बातचीत:
-{memory_context} {extra_instruction}
-
-User: "{user_input}" JARVIS:"""
-
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
-        response = requests.post(url, json=payload, timeout=10)
-        reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-        reply = clean_response(reply)  # ` ``` ` और अनचाहे टेक्स्ट को हटाएं
-
-        memory.append(f"**JARVIS:** {reply}")
-        update_memory(memory)
-
-        resp = make_response(jsonify({"reply": reply}))
-        resp.set_cookie("user_id", user_id, max_age=60*60*24*30, secure=True, samesite='None')
-        return resp
+            return jsonify({
+                "status": "success",
+                "video_id": video_id,
+                "audio_path": audio_path
+            }), 200
 
     except Exception as e:
-        print("Chat Error:", e)
-        return jsonify({"reply": "माफ़ करना, कुछ गड़बड़ हो गई। थोड़ी देर बाद फिर कोशिश करो।"}), 500
+        logger.error(f"Generation failed for Video {video_id}: {str(e)}")
+        return jsonify({"error": f"Generation failed: {str(e)}"}), 500
 
-if __name__ == '__main__':
-    debug_mode = os.getenv("DEBUG_MODE", "true").lower() == "true"
-    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
