@@ -2,7 +2,7 @@ services:
   - type: web
     name: coqui-tts-audio-gen
     env: python
-    repo: https://github.com/<your-username>/coqui-tts-audio-gen
+    repo: https://github.com/Ajmat1234/Practice-
     branch: main
     startCommand: gunicorn --bind 0.0.0.0:10000 --workers 1 --timeout 120 app:app
     envVars:
