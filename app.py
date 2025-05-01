@@ -5,6 +5,9 @@ import logging
 from pathlib import Path
 from gtts import gTTS, gTTSError
 import backoff
+import threading
+import time
+import requests
 
 app = Flask(__name__)
 
@@ -40,6 +43,26 @@ except Exception as e:
 
 # Output directory for audio files
 Path("output/audio").mkdir(parents=True, exist_ok=True)
+
+# Stay Alive Feature
+def keep_alive():
+    """Background thread to ping the /ping endpoint every 5 minutes to keep the service alive."""
+    while True:
+        try:
+            # Use the Render.com URL to ping the service
+            response = requests.post("https://practice-a69v.onrender.com/ping", timeout=10)
+            if response.status_code == 200:
+                logger.info("Stay alive ping successful")
+            else:
+                logger.error(f"Stay alive ping failed with status {response.status_code}")
+        except Exception as e:
+            logger.error(f"Stay alive ping failed: {str(e)}")
+        # Wait for 5 minutes (300 seconds)
+        time.sleep(300)
+
+# Start the keep-alive thread
+threading.Thread(target=keep_alive, daemon=True).start()
+logger.info("Started keep-alive thread")
 
 @app.route('/ping', methods=['POST'])
 def ping():
