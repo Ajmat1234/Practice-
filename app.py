@@ -86,7 +86,7 @@ def generate_audio():
     output_path = f"output/audio/audio_{video_id}_full.mp3"
     
     try:
-        tts = gTTS(text=text, lang='hi', slow=True)
+        tts = gTTS(text=text, lang='hi', slow=False)
         tts.save(output_path)
         
         # Set Redis key with TTL (3600 seconds = 1 hour)
