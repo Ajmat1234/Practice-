@@ -2,5 +2,4 @@ Flask==3.0.3
 redis==5.0.8
 gTTS==2.5.3
 backoff==2.2.1
-gunicorn==23.0.0
 requests==2.32.3
