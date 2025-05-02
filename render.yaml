@@ -1,9 +1,10 @@
 services:
   - type: web
-    name: practice-
+    name: coqui-tts-audio-gen
     env: python
     repo: https://github.com/Ajmat1234/Practice-
     branch: main
+    startCommand: python app.py
     envVars:
       - key: PORT
         value: 10000
