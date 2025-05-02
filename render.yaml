@@ -1,10 +1,9 @@
 services:
   - type: web
-    name: coqui-tts-audio-gen
+    name: practice-
     env: python
     repo: https://github.com/Ajmat1234/Practice-
     branch: main
-    startCommand: gunicorn --bind 0.0.0.0:10000 --workers 1 --timeout 120 app:app
     envVars:
       - key: PORT
         value: 10000
