@@ -24,9 +24,9 @@ logging.basicConfig(
 logger = logging.getLogger('audioGenLogger')
 
 # Redis setup
-REDIS_HOST = "redis-10583.c301.ap-south-1-1.ec2.redns.redis-cloud.com"
-REDIS_PORT = 10583
-REDIS_PASSWORD = "qBXuT3Fb37eRsVn55NWCbYCcbgV1T8oL"
+REDIS_HOST = os.environ.get("REDIS_HOST", "redis-10583.c301.ap-south-1-1.ec2.redns.redis-cloud.com")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", 10583))
+REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "qBXuT3Fb37eRsVn55NWCbYCcbgV1T8oL")
 try:
     redis_client = redis.Redis(
         host=REDIS_HOST,
@@ -47,18 +47,17 @@ Path("output/audio").mkdir(parents=True, exist_ok=True)
 # Stay Alive Feature
 def keep_alive():
     """Background thread to ping the /ping endpoint every 5 minutes to keep the service alive."""
+    logger.info("Keep-alive thread started")
     while True:
         try:
-            # Use the Render.com URL to ping the service
-            response = requests.post("https://practice-a69v.onrender.com/ping", timeout=10)
+            response = requests.post("https://practice-a69v.onrender.com/ping", timeout=30)
             if response.status_code == 200:
                 logger.info("Stay alive ping successful")
             else:
                 logger.error(f"Stay alive ping failed with status {response.status_code}")
         except Exception as e:
             logger.error(f"Stay alive ping failed: {str(e)}")
-        # Wait for 5 minutes (300 seconds)
-        time.sleep(300)
+        time.sleep(300)  # 5 minutes
 
 # Start the keep-alive thread
 threading.Thread(target=keep_alive, daemon=True).start()
@@ -69,7 +68,7 @@ def ping():
     logger.info("Ping received, service is alive")
     return jsonify({"status": "success", "message": "Service is alive"})
 
-@backoff.on_exception(backoff.expo, (gTTSError, Exception), max_tries=5)
+@backoff.on_exception(backoff.expo, gTTSError, max_tries=3)  # Simplified to handle only gTTSError
 @app.route('/generate_audio', methods=['POST'])
 def generate_audio():
     data = request.get_json()
@@ -81,11 +80,10 @@ def generate_audio():
         return jsonify({"status": "error", "message": "Missing text or video_id"}), 400
     
     logger.info(f"[*] Starting audio generation for Video {video_id}")
-    logger.info(f"Generating Hindi audio for Video {video_id} using gTTS")
-    
     output_path = f"output/audio/audio_{video_id}_full.mp3"
     
     try:
+        # Use gTTS with Hindi language, normal speed for better quality
         tts = gTTS(text=text, lang='hi', slow=False)
         tts.save(output_path)
         
@@ -101,7 +99,7 @@ def generate_audio():
         logger.error(f"Failed to generate audio for Video {video_id}: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
     except Exception as e:
-        logger.error(f"Failed to generate audio for Video {video_id}: {str(e)}")
+        logger.error(f"Unexpected error for Video {video_id}: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/download_audio/<video_id>', methods=['GET'])
