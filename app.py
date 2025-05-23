@@ -8,7 +8,7 @@ from flask import Flask, jsonify
 import re
 import json
 
-# Logging setup
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,9 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Flask app setup
 app = Flask(__name__)
 update_running = False
-processed_ids = set()  # Track processed blog IDs to avoid duplicates
 
 def replace_placeholders(content):
-    """Content me placeholders ko replace karta hai."""
+    """Replace placeholders in the content with specific values."""
     replacements = {
         "[insert specific area of the bill]": "border security",
         "[insert potential negative impact]": "reduced access to healthcare for low-income families"
@@ -40,36 +39,26 @@ def replace_placeholders(content):
     return content
 
 def clean_content(content):
-    """Markdown symbols hata kar plain text banata hai."""
+    """Remove markdown symbols from the content to ensure plain text output."""
     if not content:
         return content
-    content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)  # Bold hatao
-    content = re.sub(r'\*([^*]+)\*', r'\1', content)      # Italic hatao
-    content = re.sub(r'#+\s*', '', content)               # Headings hatao
-    content = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', content)  # Links hatao
-    content = re.sub(r'!\[([^\]]*)\]\([^\)]+\)', r'\1', content)  # Images hatao
-    content = re.sub(r'```[\s\S]*?```', '', content)      # Code blocks hatao
-    content = re.sub(r'`([^`]+)`', r'\1', content)        # Inline code hatao
-    content = re.sub(r'^\s*[-*+]\s+', '', content, flags=re.MULTILINE)  # List bullets hatao
-    content = re.sub(r'\n\s*\n+', '\n\n', content)        # Extra newlines normalize karo
+    content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)  # Remove bold
+    content = re.sub(r'\*([^*]+)\*', r'\1', content)      # Remove italic
+    content = re.sub(r'#+\s*', '', content)               # Remove headings
+    content = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', content)  # Remove links
+    content = re.sub(r'!\[([^\]]*)\]\([^\)]+\)', r'\1', content)  # Remove images
+    content = re.sub(r'```[\s\S]*?```', '', content)      # Remove code blocks
+    content = re.sub(r'`([^`]+)`', r'\1', content)        # Remove inline code
+    content = re.sub(r'^\s*[-*+]\s+', '', content, flags=re.MULTILINE)  # Remove list bullets
+    content = re.sub(r'\n\s*\n+', '\n\n', content)        # Normalize newlines
     return content.strip()
 
 def humanize_content(content):
-    """Content ko humanize karta hai."""
-    prompt = f"""Mujhe yeh Q&A content ko ek single, detailed, aur comprehensive answer me badalna hai. Naya content kam se kam 1000 words ka ho, natural, conversational, aur human-like tone me likha ho. Content engaging, informative, aur robotic ya AI-generated nahi lagna chahiye. Simple, SEO-friendly language use karo. Output plain text ho, koi markdown symbols (jaise **, *, #, ya links) nahi hone chahiye.
-
-Instructions:
-- Content ek shocking ya catchy line se start ho, jo reader's attention grab kare.
-- Content me ek ya do credible sources ka reference ho, jaise studies, reports, ya expert quotes.
-- Tone conversational ho, jaise ek dost se baat kar rahe ho.
-- Content me examples, analogies, ya real-world scenarios use karo taaki relatable ho.
+    """Humanize content using OpenRouter API with Llama model."""
+    prompt = f"""Rewrite the following Q&A content into a single, detailed, and comprehensive answer. Start with a shocking or catchy line to grab the reader's attention. The new content should be at least 1000 words long, written in a natural, conversational, and human-like tone. Make it engaging, informative, and avoid sounding robotic or AI-generated. If possible, include references to credible sources to support the information. Use simple, SEO-friendly language. The output must be plain text with no markdown symbols (e.g., no **, *, #, or links).
 
 Original Content:
-{content}
-
-Output Format:
-- Sirf humanized content do (plain text, 1000+ words, no markdown).
-"""
+{content}"""
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -83,121 +72,79 @@ Output Format:
             {"role": "user", "content": prompt}
         ]
     }
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(url, headers=headers, data=json.dumps(data), timeout=15)
-            response.raise_for_status()
-            # Log status and response for debugging
-            response_text = response.text
-            logger.info(f"Attempt {attempt + 1}/{max_retries} - Status Code: {response.status_code}, Response (first 100 chars): {response_text[:100]}...")
-            # Check if response is empty or non-JSON
-            if not response_text.strip():
-                logger.error("Empty response from API")
-                raise ValueError("Empty response from API")
-            try:
-                result = response.json()
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error: {e}, Response: {response_text}")
-                if "rate limit" in response_text.lower() or response.status_code in [429, 503]:
-                    logger.warning("Non-JSON response, assuming rate limit or server error, sleeping for 12 hours")
-                    time.sleep(12 * 3600)
-                    return humanize_content(content)
-                raise
-            # Check response structure
-            if "choices" not in result or not result["choices"]:
-                logger.error(f"Invalid API response structure: {result}")
-                raise ValueError("No choices in API response")
-            if "message" not in result["choices"][0] or "content" not in result["choices"][0]["message"]:
-                logger.error(f"Missing message/content in API response: {result}")
-                raise ValueError("Missing message/content in API response")
-            humanized_content = result["choices"][0]["message"]["content"].strip()
-            logger.info(f"Raw output from API: {humanized_content[:200]}...")  # Log first 200 chars of output
-            # Validate humanized content
-            if len(humanized_content.split()) < 500:  # Rough check for 1000 words
-                logger.error(f"Humanized content too short: {len(humanized_content.split())} words")
-                raise ValueError("Humanized content too short")
-            return humanized_content
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429:
-                logger.warning("Rate limit hit (429), 12 ghante wait kar raha hoon")
-                time.sleep(12 * 3600)  # 12 hours
-                return humanize_content(content)  # Retry after long wait
-            else:
-                logger.error(f"HTTP error on attempt {attempt + 1}/{max_retries}: {e}")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error on attempt {attempt + 1}/{max_retries}: {e}")
-        except Exception as e:
-            logger.error(f"Error on attempt {attempt + 1}/{max_retries}: {e}")
-        if attempt < max_retries - 1:
-            logger.info("Retrying after 5 seconds...")
-            time.sleep(5)  # Wait before retry
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+        response.raise_for_status()
+        result = response.json()
+        humanized_content = result["choices"][0]["message"]["content"].strip()
+        return humanized_content
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            logger.warning("Rate limit reached, sleeping for 12 hours")
+            time.sleep(12 * 3600)  # 12 hours
+            return humanize_content(content)  # Retry after delay
         else:
-            logger.error("Max retries reached, sleeping for 1 hour before next blog")
-            time.sleep(3600)  # 1 hour
-    return None
+            logger.error(f"HTTP error: {e}")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to humanize content: {e}")
+        return None
 
 def process_blogs():
-    """Supabase ke sab blogs ko process aur update karta hai."""
+    """Process and update all blogs in Supabase with humanized content."""
     page_size = 1000
     offset = 0
     total_updated = 0
-    global processed_ids
-    processed_ids.clear()  # Reset processed IDs at start
 
     while True:
-        logger.info(f"Blogs fetch kar raha hoon {offset} se {offset + page_size - 1}")
+        logger.info(f"Fetching blogs {offset} to {offset + page_size - 1}")
         response = supabase.table('blogs').select('id, content').range(offset, offset + page_size - 1).execute()
         blogs = response.data or []
 
         if not blogs:
-            logger.info("Aur koi blogs process karne ke liye nahi hain")
+            logger.info("No more blogs to process")
             break
 
         for blog in blogs:
             blog_id = blog['id']
-            if blog_id in processed_ids:
-                logger.info(f"Blog ID {blog_id} pehle se process ho chuka hai, skip kar raha hoon")
-                continue
             content = blog['content']
             if not content:
-                logger.info(f"Blog ID {blog_id} me content nahi hai, skip kar raha hoon")
+                logger.info(f"Blog ID {blog_id} has no content, skipping")
                 continue
 
             # Replace placeholders
             content = replace_placeholders(content)
-            logger.info(f"Blog ID {blog_id} ke liye placeholders replace kiye")
+            logger.info(f"Placeholders replaced for blog ID: {blog_id}")
 
             # Humanize content
-            logger.info(f"Blog ID {blog_id} ko humanize kar raha hoon")
+            logger.info(f"Humanizing blog ID: {blog_id}")
             new_content = humanize_content(content)
             if new_content:
                 new_content = clean_content(new_content)
                 try:
                     supabase.table('blogs').update({'content': new_content}).eq('id', blog_id).execute()
-                    processed_ids.add(blog_id)  # Mark as processed
                     total_updated += 1
-                    logger.info(f"Blog ID {blog_id} successfully update ho gaya")
+                    logger.info(f"Successfully updated blog ID: {blog_id}")
                 except Exception as update_err:
-                    logger.error(f"Blog ID {blog_id} update karne me fail: {update_err}")
+                    logger.error(f"Failed to update blog ID {blog_id}: {update_err}")
             else:
-                logger.warning(f"Blog ID {blog_id} ke liye humanized content nahi mila")
+                logger.warning(f"No humanized content for blog ID {blog_id}")
 
-            time.sleep(3)  # 3-second delay taaki rate limit na hit ho
+            time.sleep(3)  # 3-second delay between requests to avoid rate limits
 
         if len(blogs) < page_size:
-            logger.info("Blogs ka end aa gaya")
+            logger.info("Reached end of blogs")
             break
 
         offset += page_size
 
-    logger.info(f"Total blogs update hue: {total_updated}")
+    logger.info(f"Total blogs updated: {total_updated}")
 
 def process_blogs_background():
-    """Blog processing ko background thread me chala raha hoon."""
+    """Run the blog processing in a background thread."""
     global update_running
     if update_running:
-        logger.info("Update pehle se chal raha hai")
+        logger.info("Update already running")
         return
     update_running = True
     try:
@@ -205,39 +152,19 @@ def process_blogs_background():
     finally:
         update_running = False
 
-def keep_alive():
-    """Har 5 minute me ping karta hai taaki app alive rahe."""
-    max_retries = 3
-    while True:
-        for attempt in range(max_retries):
-            try:
-                response = requests.get(f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost:10000')}/ping", timeout=10)
-                response.raise_for_status()
-                logger.info("Keep-alive ping successful")
-                break
-            except Exception as e:
-                logger.error(f"Keep-alive attempt {attempt + 1}/{max_retries} fail hua: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(5)  # Retry se pehle wait
-                else:
-                    logger.error("Keep-alive retries ke baad bhi fail")
-        time.sleep(300)  # 5 minute wait
-
 @app.route('/start_update', methods=['POST'])
 def start_update():
-    """Blog update process start karne ka route."""
+    """Route to start the blog update process."""
     if update_running:
-        return jsonify({"message": "Update pehle se chal raha hai"}), 400
+        return jsonify({"message": "Update already running"}), 400
     threading.Thread(target=process_blogs_background).start()
-    return jsonify({"message": "Update shuru ho gaya"}), 202
+    return jsonify({"message": "Update started"}), 202
 
 @app.route('/ping', methods=['GET'])
 def ping():
-    """Ping route taaki app alive rahe."""
-    return jsonify({"status": "alive"}), 200
+    """Route to keep the app alive."""
+    return jsonify({"message": "I'm alive!"}), 200
 
 if __name__ == "__main__":
-    # Keep-alive thread shuru karo
-    threading.Thread(target=keep_alive, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
