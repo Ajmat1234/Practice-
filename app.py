@@ -69,13 +69,16 @@ Original Content:
 
 Aur is content ke liye 5-10 relevant tags bhi generate karo, jo array me hon. Tags content ke main topics aur keywords pe based hon.
 
-Output format:
-- Pehle humanized content, phir ek line break, aur phir tags array JSON format me.
+**Output Format (Strictly Follow)**:
+- Pehle humanized content likho (plain text, 1000+ words, no markdown).
+- Ek blank line (\\n\\n) daalo.
+- Phir tags ek valid JSON array me likho, jaise ["tag1", "tag2", "tag3"].
+- Agar format galat hua toh output reject ho jayega, isliye strictly is format ko follow karo.
 
 Example:
 [Humanized content here]
 
-["tag1", "tag2", "tag3"]
+["climate change", "global warming", "environment"]
 """
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -106,7 +109,6 @@ Example:
                 result = response.json()
             except json.JSONDecodeError as e:
                 logger.error(f"JSON decode error: {e}, Response: {response_text}")
-                # Assume rate limit or server error if non-JSON response
                 if "rate limit" in response_text.lower() or response.status_code in [429, 503]:
                     logger.warning("Non-JSON response, assuming rate limit or server error, sleeping for 12 hours")
                     time.sleep(12 * 3600)
@@ -120,13 +122,19 @@ Example:
                 logger.error(f"Missing message/content in API response: {result}")
                 raise ValueError("Missing message/content in API response")
             output = result["choices"][0]["message"]["content"].strip()
+            logger.info(f"Raw output from API: {output[:200]}...")  # Log first 200 chars of output
             # Split content and tags
             parts = output.split('\n\n')
             if len(parts) < 2:
-                logger.error(f"Invalid output format from API: {output}")
-                raise ValueError("Invalid output format from API")
+                logger.error(f"Invalid output format from API (missing content or tags): {output}")
+                raise ValueError("Invalid output format from API: Missing content or tags")
             humanized_content = parts[0].strip()
             tags_str = parts[1].strip()
+            # Validate humanized content
+            if len(humanized_content.split()) < 500:  # Rough check for 1000 words
+                logger.error(f"Humanized content too short: {len(humanized_content.split())} words")
+                raise ValueError("Humanized content too short")
+            # Parse tags
             try:
                 tags = json.loads(tags_str)
                 if not isinstance(tags, list):
@@ -134,6 +142,7 @@ Example:
                     tags = []
             except json.JSONDecodeError as e:
                 logger.error(f"Tags JSON decode error: {e}, Tags: {tags_str}")
+                # If tags parsing fails, keep the content but return empty tags
                 tags = []
             return humanized_content, tags
         except requests.exceptions.HTTPError as e:
@@ -189,17 +198,20 @@ def process_blogs():
             # Humanize content and generate tags
             logger.info(f"Blog ID {blog_id} ko humanize aur tags generate kar raha hoon")
             new_content, tags = humanize_content(content)
-            if new_content and tags:
+            if new_content:
                 new_content = clean_content(new_content)
                 try:
-                    supabase.table('blogs').update({'content': new_content, 'tags': tags}).eq('id', blog_id).execute()
+                    update_data = {'content': new_content}
+                    if tags:  # Only add tags if they exist
+                        update_data['tags'] = tags
+                    supabase.table('blogs').update(update_data).eq('id', blog_id).execute()
                     processed_ids.add(blog_id)  # Mark as processed
                     total_updated += 1
                     logger.info(f"Blog ID {blog_id} successfully update ho gaya with tags: {tags}")
                 except Exception as update_err:
                     logger.error(f"Blog ID {blog_id} update karne me fail: {update_err}")
             else:
-                logger.warning(f"Blog ID {blog_id} ke liye humanized content ya tags nahi mile")
+                logger.warning(f"Blog ID {blog_id} ke liye humanized content nahi mila")
 
             time.sleep(3)  # 3-second delay taaki rate limit na hit ho
 
