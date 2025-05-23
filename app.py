@@ -1,120 +1,164 @@
-from flask import Flask, request, jsonify, send_file
 import os
-import redis
-import logging
-from pathlib import Path
-from gtts import gTTS, gTTSError
-import backoff
-import threading
-import time
 import requests
+from supabase import create_client
+import logging
+import time
+import threading
+from flask import Flask, jsonify
+import re
+import json
 
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Embedded credentials (consider using environment variables in production)
+SUPABASE_URL = "https://jkittrexxvytcxnztbzn.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpraXR0cmV4eHZ5dGN4bnp0YnpuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDc1NTA4NjUsImV4cCI6MjA2MzEyNjg2NX0.StN2lUk594jUxkw_nloR7HoYKkILsf389SlIebvwp-g"
+
+# Validation
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
+
+# Initialize Supabase client
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Flask app setup
 app = Flask(__name__)
+update_running = False
 
-# Create output directory before logging setup
-Path("output").mkdir(parents=True, exist_ok=True)
+def replace_placeholders(content):
+    """Replace placeholders in the content with specific values."""
+    replacements = {
+        "[insert specific area of the bill]": "border security",
+        "[insert potential negative impact]": "reduced access to healthcare for low-income families"
+    }
+    for placeholder, value in replacements.items():
+        content = content.replace(placeholder, value)
+    return content
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    filename='output/audio_gen_detailed.log',
-    filemode='a',
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger('audioGenLogger')
+def clean_content(content):
+    """Remove markdown symbols from the content to ensure plain text output."""
+    if not content:
+        return content
+    content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)  # Remove bold
+    content = re.sub(r'\*([^*]+)\*', r'\1', content)      # Remove italic
+    content = re.sub(r'#+\s*', '', content)               # Remove headings
+    content = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', content)  # Remove links
+    content = re.sub(r'!\[([^\]]*)\]\([^\)]+\)', r'\1', content)  # Remove images
+    content = re.sub(r'```[\s\S]*?```', '', content)      # Remove code blocks
+    content = re.sub(r'`([^`]+)`', r'\1', content)        # Remove inline code
+    content = re.sub(r'^\s*[-*+]\s+', '', content, flags=re.MULTILINE)  # Remove list bullets
+    content = re.sub(r'\n\s*\n+', '\n\n', content)        # Normalize newlines
+    return content.strip()
 
-# Redis setup
-REDIS_HOST = os.environ.get("REDIS_HOST", "redis-10583.c301.ap-south-1-1.ec2.redns.redis-cloud.com")
-REDIS_PORT = int(os.environ.get("REDIS_PORT", 10583))
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "qBXuT3Fb37eRsVn55NWCbYCcbgV1T8oL")
-try:
-    redis_client = redis.Redis(
-        host=REDIS_HOST,
-        port=REDIS_PORT,
-        password=REDIS_PASSWORD,
-        decode_responses=True,
-        ssl=False
-    )
-    redis_client.ping()
-    logger.info("Connected to Redis successfully")
-except Exception as e:
-    logger.error(f"Failed to connect to Redis: {str(e)}")
-    raise
+def humanize_content(content):
+    """Humanize content using OpenRouter API with Llama model."""
+    prompt = f"""Take the following Q&A content and rewrite it into a single, detailed, and comprehensive answer. The new content should be at least 1000 words long, written in a natural, conversational, and human-like tone. Ensure the content is engaging, informative, and avoids sounding robotic or AI-generated. Use simple, SEO-friendly language. The output must be plain text with no markdown symbols (e.g., no **, *, #, or links).
 
-# Output directory for audio files
-Path("output/audio").mkdir(parents=True, exist_ok=True)
+Original Content:
+{content}"""
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": "Bearer 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",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://www.knowtivus.info",
+        "X-Title": "Knowtivus Blog"
+    }
+    data = {
+        "model": "meta-llama/llama-3.3-70b-instruct:free",
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    }
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+        response.raise_for_status()
+        result = response.json()
+        humanized_content = result["choices"][0]["message"]["content"].strip()
+        return humanized_content
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            logger.warning("Rate limit reached, sleeping for 12 hours")
+            time.sleep(12 * 3600)  # 12 hours
+            return humanize_content(content)  # Retry after delay
+        else:
+            logger.error(f"HTTP error: {e}")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to humanize content: {e}")
+        return None
 
-# Stay Alive Feature
-def keep_alive():
-    """Background thread to ping the /ping endpoint every 5 minutes to keep the service alive."""
-    logger.info("Keep-alive thread started")
+def process_blogs():
+    """Process and update all blogs in Supabase with humanized content."""
+    page_size = 1000
+    offset = 0
+    total_updated = 0
+
     while True:
-        try:
-            response = requests.post("https://practice-a69v.onrender.com/ping", timeout=30)
-            if response.status_code == 200:
-                logger.info("Stay alive ping successful")
+        logger.info(f"Fetching blogs {offset} to {offset + page_size - 1}")
+        response = supabase.table('blogs').select('id, content').range(offset, offset + page_size - 1).execute()
+        blogs = response.data or []
+
+        if not blogs:
+            logger.info("No more blogs to process")
+            break
+
+        for blog in blogs:
+            blog_id = blog['id']
+            content = blog['content']
+            if not content:
+                logger.info(f"Blog ID {blog_id} has no content, skipping")
+                continue
+
+            # Replace placeholders
+            content = replace_placeholders(content)
+            logger.info(f"Placeholders replaced for blog ID: {blog_id}")
+
+            # Humanize content
+            logger.info(f"Humanizing blog ID: {blog_id}")
+            new_content = humanize_content(content)
+            if new_content:
+                new_content = clean_content(new_content)
+                try:
+                    supabase.table('blogs').update({'content': new_content}).eq('id', blog_id).execute()
+                    total_updated += 1
+                    logger.info(f"Successfully updated blog ID: {blog_id}")
+                except Exception as update_err:
+                    logger.error(f"Failed to update blog ID {blog_id}: {update_err}")
             else:
-                logger.error(f"Stay alive ping failed with status {response.status_code}")
-        except Exception as e:
-            logger.error(f"Stay alive ping failed: {str(e)}")
-        time.sleep(300)  # 5 minutes
+                logger.warning(f"No humanized content for blog ID {blog_id}")
 
-# Start the keep-alive thread
-threading.Thread(target=keep_alive, daemon=True).start()
-logger.info("Started keep-alive thread")
+            time.sleep(3)  # 3-second delay between requests to avoid rate limits
 
-@app.route('/ping', methods=['POST'])
-def ping():
-    logger.info("Ping received, service is alive")
-    return jsonify({"status": "success", "message": "Service is alive"})
+        if len(blogs) < page_size:
+            logger.info("Reached end of blogs")
+            break
 
-@backoff.on_exception(backoff.expo, gTTSError, max_tries=3)  # Simplified to handle only gTTSError
-@app.route('/generate_audio', methods=['POST'])
-def generate_audio():
-    data = request.get_json()
-    text = data.get('text')
-    video_id = data.get('video_id')
-    
-    if not text or not video_id:
-        logger.error("Missing text or video_id in request")
-        return jsonify({"status": "error", "message": "Missing text or video_id"}), 400
-    
-    logger.info(f"[*] Starting audio generation for Video {video_id}")
-    output_path = f"output/audio/audio_{video_id}_full.mp3"
-    
+        offset += page_size
+
+    logger.info(f"Total blogs updated: {total_updated}")
+
+def process_blogs_background():
+    """Run the blog processing in a background thread."""
+    global update_running
+    if update_running:
+        logger.info("Update already running")
+        return
+    update_running = True
     try:
-        # Use gTTS with Hindi language, normal speed for better quality
-        tts = gTTS(text=text, lang='hi', slow=False)
-        tts.save(output_path)
-        
-        # Set Redis key with TTL (3600 seconds = 1 hour)
-        redis_client.setex(f"audio:{video_id}", 3600, output_path)
-        logger.info(f"Full audio generated at {output_path} with TTL of 3600 seconds")
-        logger.info(f"[*] Audio generation completed for Video {video_id}")
-        return jsonify({"status": "success", "message": "Audio generated"})
-    except gTTSError as e:
-        if "429" in str(e):
-            logger.error(f"gTTS rate limit hit for Video {video_id}")
-            return jsonify({"status": "error", "message": "Rate limit exceeded"}), 429
-        logger.error(f"Failed to generate audio for Video {video_id}: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-    except Exception as e:
-        logger.error(f"Unexpected error for Video {video_id}: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        process_blogs()
+    finally:
+        update_running = False
 
-@app.route('/download_audio/<video_id>', methods=['GET'])
-def download_audio(video_id):
-    try:
-        output_path = redis_client.get(f"audio:{video_id}")
-        if not output_path or not os.path.exists(output_path):
-            logger.error(f"Audio file not found for Video {video_id}")
-            return jsonify({"status": "error", "message": "Audio file not found"}), 404
-        
-        logger.info(f"Downloading audio for Video {video_id} from {output_path}")
-        return send_file(output_path, as_attachment=True)
-    except Exception as e:
-        logger.error(f"Failed to download audio for Video {video_id}: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+@app.route('/start_update', methods=['POST'])
+def start_update():
+    """Route to start the blog update process."""
+    if update_running:
+        return jsonify({"message": "Update already running"}), 400
+    threading.Thread(target=process_blogs_background).start()
+    return jsonify({"message": "Update started"}), 202
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
