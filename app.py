@@ -1,12 +1,10 @@
 import os
-import requests
-from supabase import create_client
 import logging
 import time
 import threading
 from flask import Flask, jsonify
 import re
-import json
+from together import Together
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -15,14 +13,18 @@ logger = logging.getLogger(__name__)
 # Environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY")
 
 # Validation
-if not SUPABASE_URL or not SUPABASE_KEY or not OPENROUTER_API_KEY:
-    raise ValueError("Missing environment variables: SUPABASE_URL, SUPABASE_KEY, or OPENROUTER_API_KEY")
+if not SUPABASE_URL or not SUPABASE_KEY or not TOGETHER_API_KEY:
+    raise ValueError("Missing environment variables: SUPABASE_URL, SUPABASE_KEY, or TOGETHER_API_KEY")
 
 # Initialize Supabase client
+from supabase import create_client
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Initialize Together client
+client = Together(api_key=TOGETHER_API_KEY)
 
 # Flask app setup
 app = Flask(__name__)
@@ -54,38 +56,25 @@ def clean_content(content):
     return content.strip()
 
 def humanize_content(content):
-    """Humanize content using OpenRouter API with Llama model."""
-    prompt = f"""Rewrite the following Q&A content into a single, detailed, and comprehensive answer. Start with a shocking or catchy line to grab the reader's attention. The new content should be at least 1000 words long, written in a natural, conversational, and human-like tone. Make it engaging, informative, and avoid sounding robotic or AI-generated. If possible, include references to credible sources to support the information. Use simple, SEO-friendly language. The output must be plain text with no markdown symbols (e.g., no **, *, #, or links).
+    """Humanize content using Together API with Llama model."""
+    prompt = f"""Take the following Q&A content and rewrite it into a single, detailed, and comprehensive answer. The new content should be at least 1000 words long, written in a natural, conversational, and human-like tone. Ensure the content is engaging, informative, and avoids sounding robotic or AI-generated. Use simple, SEO-friendly language. The output must be plain text with no markdown symbols (e.g., no **, *, #, or links).
 
 Original Content:
 {content}"""
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://www.knowtivus.info",
-        "X-Title": "Knowtivus Blog"
-    }
-    data = {
-        "model": "meta-llama/llama-3.3-70b-instruct:free",
-        "messages": [
-            {"role": "user", "content": prompt}
-        ]
-    }
+    messages = [
+        {"role": "user", "content": prompt}
+    ]
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-        response.raise_for_status()
-        result = response.json()
-        humanized_content = result["choices"][0]["message"]["content"].strip()
-        return humanized_content
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 429:
-            logger.warning("Rate limit reached, sleeping for 12 hours")
-            time.sleep(12 * 3600)  # 12 hours
-            return humanize_content(content)  # Retry after delay
-        else:
-            logger.error(f"HTTP error: {e}")
-            return None
+        response = client.chat.completions.create(
+            model="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+            messages=messages,
+            stream=True
+        )
+        humanized_content = ""
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                humanized_content += chunk.choices[0].delta.content
+        return humanized_content.strip()
     except Exception as e:
         logger.error(f"Failed to humanize content: {e}")
         return None
