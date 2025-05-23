@@ -12,13 +12,14 @@ import json
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Embedded credentials (consider using environment variables in production)
-SUPABASE_URL = "https://jkittrexxvytcxnztbzn.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpraXR0cmV4eHZ5dGN4bnp0YnpuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDc1NTA4NjUsImV4cCI6MjA2MzEyNjg2NX0.StN2lUk594jUxkw_nloR7HoYKkILsf389SlIebvwp-g"
+# Environment variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 # Validation
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
+if not SUPABASE_URL or not SUPABASE_KEY or not OPENROUTER_API_KEY:
+    raise ValueError("Missing environment variables: SUPABASE_URL, SUPABASE_KEY, or OPENROUTER_API_KEY")
 
 # Initialize Supabase client
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -60,7 +61,7 @@ Original Content:
 {content}"""
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": "Bearer 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",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://www.knowtivus.info",
         "X-Title": "Knowtivus Blog"
