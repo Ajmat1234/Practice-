@@ -27,6 +27,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Flask app setup
 app = Flask(__name__)
 update_running = False
+processed_ids = set()  # Track processed blog IDs to avoid duplicates
 
 def replace_placeholders(content):
     """Content me placeholders ko replace karta hai."""
@@ -89,34 +90,78 @@ Example:
             {"role": "user", "content": prompt}
         ]
     }
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-        response.raise_for_status()
-        result = response.json()
-        output = result["choices"][0]["message"]["content"].strip()
-        # Split content and tags
-        parts = output.split('\n\n')
-        humanized_content = parts[0].strip()
-        tags_str = parts[1].strip() if len(parts) > 1 else "[]"
-        tags = json.loads(tags_str)
-        return humanized_content, tags
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 429:
-            logger.warning("Rate limit hit, 12 ghante wait kar raha hoon")
-            time.sleep(12 * 3600)  # 12 hours
-            return humanize_content(content)  # Retry
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(data), timeout=15)
+            response.raise_for_status()
+            # Log status and response for debugging
+            response_text = response.text
+            logger.info(f"Attempt {attempt + 1}/{max_retries} - Status Code: {response.status_code}, Response (first 100 chars): {response_text[:100]}...")
+            # Check if response is empty or non-JSON
+            if not response_text.strip():
+                logger.error("Empty response from API")
+                raise ValueError("Empty response from API")
+            try:
+                result = response.json()
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error: {e}, Response: {response_text}")
+                # Assume rate limit or server error if non-JSON response
+                if "rate limit" in response_text.lower() or response.status_code in [429, 503]:
+                    logger.warning("Non-JSON response, assuming rate limit or server error, sleeping for 12 hours")
+                    time.sleep(12 * 3600)
+                    return humanize_content(content)
+                raise
+            # Check response structure
+            if "choices" not in result or not result["choices"]:
+                logger.error(f"Invalid API response structure: {result}")
+                raise ValueError("No choices in API response")
+            if "message" not in result["choices"][0] or "content" not in result["choices"][0]["message"]:
+                logger.error(f"Missing message/content in API response: {result}")
+                raise ValueError("Missing message/content in API response")
+            output = result["choices"][0]["message"]["content"].strip()
+            # Split content and tags
+            parts = output.split('\n\n')
+            if len(parts) < 2:
+                logger.error(f"Invalid output format from API: {output}")
+                raise ValueError("Invalid output format from API")
+            humanized_content = parts[0].strip()
+            tags_str = parts[1].strip()
+            try:
+                tags = json.loads(tags_str)
+                if not isinstance(tags, list):
+                    logger.error(f"Tags is not a list: {tags_str}")
+                    tags = []
+            except json.JSONDecodeError as e:
+                logger.error(f"Tags JSON decode error: {e}, Tags: {tags_str}")
+                tags = []
+            return humanized_content, tags
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
+                logger.warning("Rate limit hit (429), 12 ghante wait kar raha hoon")
+                time.sleep(12 * 3600)  # 12 hours
+                return humanize_content(content)  # Retry after long wait
+            else:
+                logger.error(f"HTTP error on attempt {attempt + 1}/{max_retries}: {e}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error on attempt {attempt + 1}/{max_retries}: {e}")
+        except Exception as e:
+            logger.error(f"Error on attempt {attempt + 1}/{max_retries}: {e}")
+        if attempt < max_retries - 1:
+            logger.info("Retrying after 5 seconds...")
+            time.sleep(5)  # Wait before retry
         else:
-            logger.error(f"HTTP error: {e}")
-            return None, []
-    except Exception as e:
-        logger.error(f"Content humanize karne me fail: {e}")
-        return None, []
+            logger.error("Max retries reached, sleeping for 1 hour before next blog")
+            time.sleep(3600)  # 1 hour
+    return None, []
 
 def process_blogs():
     """Supabase ke sab blogs ko process aur update karta hai."""
     page_size = 1000
     offset = 0
     total_updated = 0
+    global processed_ids
+    processed_ids.clear()  # Reset processed IDs at start
 
     while True:
         logger.info(f"Blogs fetch kar raha hoon {offset} se {offset + page_size - 1}")
@@ -129,6 +174,9 @@ def process_blogs():
 
         for blog in blogs:
             blog_id = blog['id']
+            if blog_id in processed_ids:
+                logger.info(f"Blog ID {blog_id} pehle se process ho chuka hai, skip kar raha hoon")
+                continue
             content = blog['content']
             if not content:
                 logger.info(f"Blog ID {blog_id} me content nahi hai, skip kar raha hoon")
@@ -145,6 +193,7 @@ def process_blogs():
                 new_content = clean_content(new_content)
                 try:
                     supabase.table('blogs').update({'content': new_content, 'tags': tags}).eq('id', blog_id).execute()
+                    processed_ids.add(blog_id)  # Mark as processed
                     total_updated += 1
                     logger.info(f"Blog ID {blog_id} successfully update ho gaya with tags: {tags}")
                 except Exception as update_err:
@@ -180,7 +229,7 @@ def keep_alive():
     while True:
         for attempt in range(max_retries):
             try:
-                response = requests.get(f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost:5000')}/ping", timeout=10)
+                response = requests.get(f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost:10000')}/ping", timeout=10)
                 response.raise_for_status()
                 logger.info("Keep-alive ping successful")
                 break
@@ -208,5 +257,5 @@ def ping():
 if __name__ == "__main__":
     # Keep-alive thread shuru karo
     threading.Thread(target=keep_alive, daemon=True).start()
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
