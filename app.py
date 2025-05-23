@@ -60,7 +60,7 @@ Original Content:
 {content}"""
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": "Bearer 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",
+        "Authorization": "Bearer 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",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://www.knowtivus.info",
         "X-Title": "Knowtivus Blog"
