@@ -1,26 +1,28 @@
 import requests
 from bs4 import BeautifulSoup
 
-def get_trending_searches_india():
-    url = "https://trends.google.com/trends/trendingsearches/daily/rss?geo=IN"
-    response = requests.get(url)
+def get_trending_searches():
+    url = "https://trends.google.com/trends/trendingsearches/daily?geo=IN"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
 
+    response = requests.get(url, headers=headers)
     if response.status_code != 200:
         print("Failed to fetch data:", response.status_code)
         return []
 
-    soup = BeautifulSoup(response.content, 'xml')
-    items = soup.find_all('item')
+    soup = BeautifulSoup(response.text, "html.parser")
+    titles = soup.select("div.feed-item-header > a")
 
-    trends = []
-    for item in items:
-        title = item.title.text
-        trends.append(title)
+    results = []
+    for title in titles:
+        results.append(title.text.strip())
 
-    return trends
+    return results
 
-# Run function
-top_trends = get_trending_searches_india()
+# Run it
+top_trends = get_trending_searches()
 print("Top Trending Google Searches in India (Last 24 Hours):")
 for i, trend in enumerate(top_trends[:20], 1):
     print(f"{i}. {trend}")
