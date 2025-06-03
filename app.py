@@ -1,9 +1,26 @@
-from pytrends.request import TrendReq
+import requests
+from bs4 import BeautifulSoup
 
-pytrends = TrendReq(hl='en-US', tz=360)
+def get_trending_searches_india():
+    url = "https://trends.google.com/trends/trendingsearches/daily/rss?geo=IN"
+    response = requests.get(url)
 
-# Try with supported country
-trending_searches_df = pytrends.trending_searches(pn='united_states')
+    if response.status_code != 200:
+        print("Failed to fetch data:", response.status_code)
+        return []
 
-print("Top Trending Topics (US):")
-print(trending_searches_df.head(20))
+    soup = BeautifulSoup(response.content, 'xml')
+    items = soup.find_all('item')
+
+    trends = []
+    for item in items:
+        title = item.title.text
+        trends.append(title)
+
+    return trends
+
+# Run function
+top_trends = get_trending_searches_india()
+print("Top Trending Google Searches in India (Last 24 Hours):")
+for i, trend in enumerate(top_trends[:20], 1):
+    print(f"{i}. {trend}")
