@@ -1,11 +1,9 @@
 from pytrends.request import TrendReq
 
-# Pytrends object bana rahe hain
-pytrends = TrendReq(hl='en-IN', tz=330)
+pytrends = TrendReq(hl='en-US', tz=360)
 
-# Top trending searches in India (realtime)
-trending_searches_df = pytrends.trending_searches(pn='india')
+# Try with supported country
+trending_searches_df = pytrends.trending_searches(pn='united_states')
 
-# Print top 20 trending topics
-print("Top Trending Topics in India:")
+print("Top Trending Topics (US):")
 print(trending_searches_df.head(20))
