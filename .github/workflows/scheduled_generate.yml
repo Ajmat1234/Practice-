@@ -1,6 +1,6 @@
 name: Scheduled Generate Calls
 
-on:
+on:hdjdjdj
   schedule:
     # June 15 UTC times
     - cron: '0 0 * * *'   # 05:30 AM IST
