@@ -1,28 +1,14 @@
 name: Scheduled Generate Calls
 
-on:hdjdjdj
+on:
   schedule:
-    # June 15 UTC times
-    - cron: '0 0 * * *'   # 05:30 AM IST
-    - cron: '30 22 * * *' # 04:00 AM IST
-    - cron: '0 21 * * *'  # 02:30 AM IST
-    - cron: '0 20 * * *'  # 01:30 AM IST
-    - cron: '0 19 * * *'  # 12:30 AM IST
-
-    # June 16 UTC times
-    - cron: '30 1 * * *'  # 07:00 AM IST
-    - cron: '0 3 * * *'   # 08:30 AM IST
-    - cron: '15 4 * * *'  # 09:45 AM IST
-    - cron: '30 5 * * *'  # 11:00 AM IST
-    - cron: '0 7 * * *'   # 12:30 PM IST
-    - cron: '30 8 * * *'  # 02:00 PM IST
-    - cron: '0 10 * * *'  # 03:30 PM IST
-    - cron: '30 11 * * *' # 05:00 PM IST
-    - cron: '0 13 * * *'  # 06:30 PM IST
-    - cron: '30 14 * * *' # 08:00 PM IST
-    - cron: '30 15 * * *' # 09:00 PM IST
-    - cron: '30 16 * * *' # 10:00 PM IST
-    - cron: '0 18 * * *'  # 11:30 PM IST
+    # India Standard Time slots (converted to UTC)
+    - cron: '30 3 * * *'   # 09:00 AM IST
+    - cron: '30 5 * * *'   # 11:00 AM IST
+    - cron: '0 9 * * *'    # 02:30 PM IST
+    - cron: '0 12 * * *'   # 05:30 PM IST
+    - cron: '30 14 * * *'  # 08:00 PM IST
+    - cron: '0 16 * * *'   # 09:30 PM IST
 
 jobs:
   call_generate_endpoint:
