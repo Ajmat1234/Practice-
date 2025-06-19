@@ -2,12 +2,17 @@ name: Scheduled Generate Calls
 
 on:
   schedule:
-    # USA Prime Times (converted to UTC)
-    - cron: '0 23 * * *'   # 06:00 PM EST
-    - cron: '30 0 * * *'   # 07:30 PM EST / 04:30 PM PST
-    - cron: '0 1 * * *'    # 08:00 PM EST / 05:00 PM PST
-    - cron: '30 2 * * *'   # 09:30 PM EST / 06:30 PM PST
-    - cron: '0 4 * * *'    # 08:00 PM PST (late night EST)
+    # UK Prime Time
+    - cron: '0 19 * * *'   # 08:00 PM UK (UTC)
+    - cron: '0 21 * * *'   # 10:00 PM UK (UTC)
+
+    # US EST Prime Time
+    - cron: '0 1 * * *'    # 08:00 PM EST
+    - cron: '0 3 * * *'    # 10:00 PM EST
+
+    # US PST Prime Time
+    - cron: '0 5 * * *'    # 10:00 PM PST
+    - cron: '0 6 * * *'    # 11:00 PM PST
 
 jobs:
   call_generate_endpoint:
