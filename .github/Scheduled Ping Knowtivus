@@ -1,0 +1,12 @@
+name: Scheduled Ping Knowtivus
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'  # Every 20 minutes
+
+jobs:
+  ping_knowtivus:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping knowtivus.info to keep alive
+        run: curl -s https://www.knowtivus.info/
