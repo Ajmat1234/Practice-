@@ -1,0 +1,21 @@
+name: Scheduled Ping All URLs
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Every 5 minutes
+
+jobs:
+  ping_urls:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping multiple URLs to keep them alive
+        run: |
+          urls=(
+            "https://test-hindi.onrender.com/ping"
+            "https://test-dq0m.onrender.com/ping"
+          )
+
+          for url in "${urls[@]}"; do
+            echo "Pinging $url"
+            curl -s "$url" || echo "Failed to ping $url"
+          done
