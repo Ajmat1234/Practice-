@@ -13,6 +13,7 @@ jobs:
           urls=(
             "https://test-hindi.onrender.com/ping"
             "https://test-dq0m.onrender.com/ping"
+            "https://created-xtl2.onrender.com/ping"
           )
 
           for url in "${urls[@]}"; do
