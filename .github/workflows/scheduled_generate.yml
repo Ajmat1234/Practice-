@@ -15,8 +15,13 @@ on:
     - cron: '0 6 * * *'    # 11:00 PM PST
 
 jobs:
-  call_generate_endpoint:
+  call_generate_endpoints:
     runs-on: ubuntu-latest
     steps:
-      - name: Call Render generate route
-        run: curl -s https://hindi-yt.onrender.com/generate
+      - name: Call both generate routes
+        run: |
+          echo "Calling hindi-yt route..."
+          curl -s https://hindi-yt.onrender.com/generate
+
+          echo "Calling instagram-dm-hnb6 route..."
+          curl -s https://instagram-dm-hnb6.onrender.com/generate
