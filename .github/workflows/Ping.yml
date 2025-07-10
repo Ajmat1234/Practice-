@@ -11,6 +11,7 @@ jobs:
       - name: Ping multiple URLs to keep them alive
         run: |
           urls=(
+            "https://instagram-dm-hnb6.onrender.com/ping"
             "https://test-hindi.onrender.com/ping"
             "https://test-dq0m.onrender.com/ping"
             "https://created-xtl2.onrender.com/ping"
