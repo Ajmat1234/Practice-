@@ -1,13 +1,13 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, send_from_directory
 import os
 from datetime import datetime
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB limit for screenshots
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB limit
 
-# Save folder (Render.com persistent storage – use /tmp or env var for production)
-SAVE_DIR = '/tmp/screenshots'  # Render.com पर /tmp work करता, or env var set कर
+# Persistent dir for Render (relative to app root)
+SAVE_DIR = './screenshots'
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # HTML template for dashboard
@@ -33,23 +33,27 @@ DASHBOARD_TEMPLATE = """
 
 @app.route('/upload', methods=['POST'])
 def upload_screenshot():
+    print("POST to /upload received")  # Log incoming request
+    print(f"Headers: {request.headers}")  # Debug headers
     try:
         if 'file' not in request.files:
+            print("No file part in request")
             return jsonify({"error": "No file part"}), 400
         
         file = request.files['file']
+        print(f"File received: {file.filename}, size: {file.content_length}")
         if file.filename == '':
+            print("No selected file")
             return jsonify({"error": "No selected file"}), 400
         
         if file and file.filename.endswith('.jpg'):
-            # Secure filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"screenshot_{timestamp}.jpg"
             filepath = os.path.join(SAVE_DIR, filename)
             file.save(filepath)
             
             size = os.path.getsize(filepath)
-            print(f"✅ Screenshot received! File: {filename}, Size: {size} bytes")  # Log for Render console
+            print(f"✅ Screenshot saved: {filename}, Size: {size} bytes at {filepath}")
             
             return jsonify({
                 "success": True,
@@ -58,6 +62,7 @@ def upload_screenshot():
                 "message": "Screenshot saved successfully!"
             }), 200
         else:
+            print("Invalid file type")
             return jsonify({"error": "Invalid file type - must be JPG"}), 400
     except Exception as e:
         print(f"❌ Error: {str(e)}")
@@ -65,15 +70,22 @@ def upload_screenshot():
 
 @app.route('/image/<filename>')
 def serve_image(filename):
-    return send_from_directory(SAVE_DIR, filename)
+    filepath = os.path.join(SAVE_DIR, filename)
+    if os.path.exists(filepath):
+        print(f"Serving image: {filename}")
+        return send_from_directory(SAVE_DIR, filename)
+    print(f"File not found: {filename}")
+    return "File not found", 404
 
 @app.route('/', methods=['GET'])
 def dashboard():
     files = [f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')]
-    files.sort(reverse=True)  # Latest first
-    files = files[:10]  # Last 10
+    files.sort(reverse=True)
+    files = files[:10]
+    print(f"Dashboard accessed, files: {files}, total: {len(files)}")
     return render_template_string(DASHBOARD_TEMPLATE, files=files, total=len(files))
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    print(f"Server starting on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=True)
