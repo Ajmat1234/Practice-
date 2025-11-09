@@ -10,8 +10,6 @@ import logging
 import shutil  # For cleanup
 import asyncio  # For async WS
 from flask_sock import Sock  # For plain WebSocket support in Flask
-from concurrent.futures import ThreadPoolExecutor  # For async thread if needed
-import websockets  # Keep for compatibility, but use flask-sock
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -62,7 +60,7 @@ def load_system_instruction():
             context = json.load(f)
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         model = genai.GenerativeModel(
-            model_name='gemini-2.0-flash-exp',  # 2025 model (fallback to 'gemini-1.5-flash')
+            model_name='gemini-1.5-flash',  # 2025 model (fallback to 'gemini-1.5-flash')
             system_instruction=system_instruction
         )
         chat = model.start_chat()
@@ -187,11 +185,15 @@ def upload_screenshot():
                         size_audio = os.path.getsize(audio_path)
                         logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi')", audio_url, size_audio)
                         
-                        # Push to connected WS clients (using flask-sock's event loop)
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(send_audio_to_clients(audio_url, assistant_response))
-                        loop.close()
+                        # Push to connected WS clients (separate try for push only)
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(send_audio_to_clients(audio_url, assistant_response))
+                            loop.close()
+                        except Exception as push_err:
+                            logger.error(f"❌ WS Push Error: {push_err}")
+                            # Don't fail the whole process - audio_url still valid for HTTP response
                         
                         cleanup_old_audios()
                     else:
@@ -223,6 +225,7 @@ def upload_screenshot():
 
 # Async function to send audio to all clients
 async def send_audio_to_clients(audio_url, text):
+    global clients
     message = json.dumps({'audio_url': audio_url, 'text': text})
     disconnected = set()
     for client in clients:
@@ -237,6 +240,7 @@ async def send_audio_to_clients(audio_url, text):
 # Plain WebSocket route for /ws-audio using flask-sock
 @sock.route('/ws-audio')
 async def ws_audio(ws):
+    global clients
     logger.info("🔌 Client connected to /ws-audio")
     clients.add(ws)
     try:
