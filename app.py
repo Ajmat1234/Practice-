@@ -11,7 +11,7 @@ import shutil  # For cleanup
 import asyncio  # For async WS
 from flask_sock import Sock  # For plain WebSocket support in Flask
 
-# Setup logging
+# Setup logging (more verbose for WS)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def load_system_instruction():
             context = json.load(f)
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',  # 2025 model (fallback to 'gemini-1.5-flash')
+            model_name='gemini-2.0-flash-exp',  # 2025 model (fallback to 'gemini-1.5-flash')
             system_instruction=system_instruction
         )
         chat = model.start_chat()
@@ -187,10 +187,12 @@ def upload_screenshot():
                         
                         # Push to connected WS clients (separate try for push only)
                         try:
+                            logger.info(f"🔄 Attempting WS push - Current clients count: {len(clients)}")  # New log
                             loop = asyncio.new_event_loop()
                             asyncio.set_event_loop(loop)
                             loop.run_until_complete(send_audio_to_clients(audio_url, assistant_response))
                             loop.close()
+                            logger.info("✅ WS push attempted successfully")
                         except Exception as push_err:
                             logger.error(f"❌ WS Push Error: {push_err}")
                             # Don't fail the whole process - audio_url still valid for HTTP response
@@ -226,33 +228,39 @@ def upload_screenshot():
 # Async function to send audio to all clients
 async def send_audio_to_clients(audio_url, text):
     global clients
+    if not clients:
+        logger.warning("⚠️ No WS clients connected - skipping push")
+        return
     message = json.dumps({'audio_url': audio_url, 'text': text})
     disconnected = set()
-    for client in clients:
+    sent_count = 0
+    for client in clients.copy():  # Copy to avoid modification during iteration
         try:
             await client.send(message)
-            logger.info(f"📤 Sent audio to client: {audio_url}")
+            sent_count += 1
+            logger.info(f"📤 Sent audio to client ({sent_count}/{len(clients)}): {audio_url}")
         except Exception as e:
-            logger.error(f"Failed to send to client: {e}")
+            logger.error(f"❌ Failed to send to client: {e}")
             disconnected.add(client)
     clients -= disconnected  # Remove dead clients
+    logger.info(f"📤 Push complete: Sent to {sent_count} clients, removed {len(disconnected)} dead")
 
 # Plain WebSocket route for /ws-audio using flask-sock
 @sock.route('/ws-audio')
 async def ws_audio(ws):
-    global clients
-    logger.info("🔌 Client connected to /ws-audio")
+    logger.info("🔌 WS Client CONNECTED to /ws-audio - Total clients now: %d", len(clients) + 1)  # Enhanced log
     clients.add(ws)
+    logger.info("🔌 Client added to set - Current clients: %d", len(clients))
     try:
         # Listen for messages (e.g., pings) without blocking
         async for message in ws:
             logger.info(f"📨 WS message received: {message}")
             # Handle if needed (e.g., pong)
     except Exception as e:
-        logger.error(f"WS error: {e}")
+        logger.error(f"❌ WS error: {e}")
     finally:
         clients.discard(ws)
-        logger.info("🔌 Client disconnected from /ws-audio")
+        logger.info("🔌 WS Client DISCONNECTED - Total clients now: %d", len(clients))
 
 # Other routes (same as your code)
 @app.route('/image/<filename>')
