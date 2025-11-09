@@ -1,5 +1,4 @@
-# app.py - Fixed Gemini response handling: Safely extract text if parts exist, else empty string (handles finish_reason=1 / no content)
-# No other changes needed - URLs correct in client app per SS
+# app.py - Enhanced Gemini response extraction: Log full candidate details if empty; gTTS lang='hi-IN' for better Hindi; Added TTS error handling + cleanup old audios (prevent dir bloat on Render free tier)
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
 from flask_socketio import SocketIO, emit
 import os
@@ -10,6 +9,7 @@ from datetime import datetime
 import io
 import json
 import logging
+import shutil  # For cleanup
 
 # Setup logging for detailed logs (visible in Render console)
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +37,16 @@ SAVE_DIR = './screenshots'
 AUDIO_DIR = './static/audio'
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
+
+# Cleanup old audios on startup (keep last 50 to avoid Render disk limits)
+def cleanup_old_audios(max_files=50):
+    audio_files = sorted([f for f in os.listdir(AUDIO_DIR) if f.endswith('.mp3')], reverse=True)
+    if len(audio_files) > max_files:
+        for old_file in audio_files[max_files:]:
+            os.remove(os.path.join(AUDIO_DIR, old_file))
+        logger.info(f"🧹 Cleaned up {len(audio_files) - max_files} old audio files")
+
+cleanup_old_audios()
 
 # Load system instruction from context.json (once on startup, reset on new game)
 def load_system_instruction():
@@ -146,8 +156,8 @@ def upload_screenshot():
                 current_image = Image.open(filepath)
                 logger.info("🖼️ Image loaded successfully (PIL format)")
                 
-                # Prepare content (original prompt style)
-                prompt_text = "Analyze this new Free Fire screenshot for any critical game event: enemies, blue zone, low HP, teammate down, damage to enemy, etc. Respond only if important (short Hindi advice); else empty string."
+                # Prepare content (original prompt style) - Emphasize Hindi
+                prompt_text = "Analyze this new Free Fire screenshot for any critical game event: enemies, blue zone, low HP, teammate down, damage to enemy, etc. Respond only if important (short Hindi advice in pure Devanagari script); else empty string."
                 content_list = [prompt_text, current_image]  # List for content
                 logger.info("📝 Prompt prepared: '%s'", prompt_text)
                 
@@ -157,11 +167,19 @@ def upload_screenshot():
                     response = chat.send_message(content=content_list)
                     logger.info(f"📨 Gemini full response object: {response}")
                     
-                    # FIXED: Safely extract text - handle empty/no parts (finish_reason=1)
+                    # Enhanced extraction: Handle empty candidates/parts safely
                     assistant_response = ""
-                    if response.candidates and response.candidates[0].content.parts:
-                        part_text = response.candidates[0].content.parts[0].text or ""
-                        assistant_response = part_text.strip()
+                    if response.candidates and len(response.candidates) > 0:
+                        candidate = response.candidates[0]
+                        if candidate.content and candidate.content.parts and len(candidate.content.parts) > 0:
+                            part = candidate.content.parts[0]
+                            if hasattr(part, 'text') and part.text:
+                                assistant_response = part.text.strip()
+                            logger.info(f"🔍 Candidate details: finish_reason={candidate.finish_reason}, parts={len(candidate.content.parts)}")
+                        else:
+                            logger.warning("⚠️ No parts in candidate - possible empty response")
+                    else:
+                        logger.warning("⚠️ No candidates in response - model stopped early (finish_reason likely STOP)")
                     
                     logger.info("📨 Gemini extracted response: '%s'", assistant_response)
                     
@@ -169,25 +187,33 @@ def upload_screenshot():
                         response_text = assistant_response
                         logger.info("🔍 Important event detected: '%s'", assistant_response)
                         
-                        # Generate TTS audio (fast, Hindi)
+                        # Generate TTS audio (fast, Hindi with hi-IN for better pronunciation)
                         logger.info("🔊 Generating TTS audio...")
-                        tts = gTTS(text=assistant_response, lang='hi', slow=False)
-                        audio_filename = f"audio_{timestamp}.mp3"
-                        audio_path = os.path.join(AUDIO_DIR, audio_filename)
-                        tts.save(audio_path)
-                        
-                        # Audio URL (static serve on Render, full URL for client)
-                        audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
-                        size_audio = os.path.getsize(audio_path)
-                        logger.info("🎵 Audio generated: %s, Size: %d bytes", audio_url, size_audio)
+                        try:
+                            tts = gTTS(text=assistant_response, lang='hi-IN', slow=False)
+                            audio_filename = f"audio_{timestamp}.mp3"
+                            audio_path = os.path.join(AUDIO_DIR, audio_filename)
+                            tts.save(audio_path)
+                            
+                            # Audio URL (static serve on Render, full URL for client)
+                            audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
+                            size_audio = os.path.getsize(audio_path)
+                            logger.info("🎵 Audio generated: %s, Size: %d bytes", audio_url, size_audio)
+                            
+                            # Cleanup old audios after save
+                            cleanup_old_audios()
+                        except Exception as tts_err:
+                            logger.error("❌ TTS Generation Error: %s (text was: '%s')", str(tts_err), assistant_response)
+                            audio_url = None
                         
                         # Push to connected clients via SocketIO (server-push to WS clients)
-                        socketio.emit('audio_response', {
-                            'url': audio_url, 
-                            'text': assistant_response,
-                            'timestamp': timestamp
-                        }, namespace='/ws-audio')
-                        logger.info("📡 Audio pushed via WS to all connected clients (threading mode)")
+                        if audio_url:
+                            socketio.emit('audio_response', {
+                                'url': audio_url, 
+                                'text': assistant_response,
+                                'timestamp': timestamp
+                            }, namespace='/ws-audio')
+                            logger.info("📡 Audio pushed via WS to all connected clients (threading mode)")
                     else:
                         logger.info("🤐 No important event - staying silent (as per rules)")
                 else:
@@ -199,7 +225,7 @@ def upload_screenshot():
                 audio_url = None
                 response_text = None
             
-            logger.info("✅ Upload & process complete for %s. Audio: %s", filename, audio_url or "None")
+            logger.info("✅ Upload & process complete for %s. Audio: %s | Response: '%s'", filename, audio_url or "None", response_text or "Empty")
             return jsonify({
                 "success": True,
                 "filename": filename,
@@ -230,9 +256,9 @@ def serve_image(filename):
 def serve_audio(filename):
     filepath = os.path.join(AUDIO_DIR, filename)
     if os.path.exists(filepath):
-        logger.info("🎵 Serving audio: %s", filename)
+        logger.info("🎵 Serving audio: %s (exists: yes)", filename)
         return send_from_directory(AUDIO_DIR, filename)
-    logger.warning("⚠️ Audio not found: %s", filename)
+    logger.warning("⚠️ Audio not found: %s (path: %s)", filename, filepath)
     return "File not found", 404
 
 # Reset chat for new game (reloads context, new session)
@@ -241,6 +267,7 @@ def reset_chat():
     logger.info("🔄 Reset chat requested - starting new session for game")
     try:
         load_system_instruction()  # Reloads and starts fresh chat
+        cleanup_old_audios()  # Clean on reset too
         logger.info("✅ Chat reset successful")
         return jsonify({"success": True, "message": "Chat reset for new game."}), 200
     except Exception as e:
