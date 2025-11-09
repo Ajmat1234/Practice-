@@ -1,4 +1,7 @@
-# app.py - Updated with more logs, original image upload intact, Python WS equivalent via SocketIO for audio push
+# app.py - Fixed for Python 3.13 compatibility: Switched to async_mode='threading' (no eventlet needed)
+# Added /ping endpoint for keep-alive pings (use UptimeRobot to ping every 10 min)
+# Model: gemini-2.5-flash (confirmed available in 2025)
+# Server URL: https://practice-ppaz.onrender.com (updated in dashboard)
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
 from flask_socketio import SocketIO, emit
 import os
@@ -18,9 +21,9 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB limit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret')
 
-# SocketIO for real-time audio notifications (Python equivalent of your JS WS sender)
-# Clients connect to /ws-audio (via SocketIO), server pushes audio_url when ready
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', logger=True, engineio_logger=True)
+# SocketIO: Switched to 'threading' for Python 3.13 compatibility (no eventlet patching issues)
+# Clients connect to wss://practice-ppaz.onrender.com/ws-audio
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
 
 # Configure Gemini - API key from env
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
@@ -47,11 +50,11 @@ def load_system_instruction():
             context = json.load(f)
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',  # Fast for free tier
+            model_name='gemini-2.5-flash',  # Updated to 2.5-flash (fast, available in 2025)
             system_instruction=system_instruction
         )
         chat = model.start_chat()
-        logger.info("✅ System instruction loaded and new chat session started.")
+        logger.info("✅ System instruction loaded and new chat session started with gemini-2.5-flash.")
     except FileNotFoundError:
         logger.error("❌ context.json not found. Using fallback and creating file.")
         # Fallback context (basic for safety)
@@ -79,16 +82,19 @@ def load_system_instruction():
 
 # Initialize on startup
 load_system_instruction()
-logger.info("🚀 Server initialized. Ready for screenshots.")
+SERVER_URL = "https://practice-ppaz.onrender.com"
+logger.info(f"🚀 Server initialized at {SERVER_URL}. Ready for screenshots. WS: wss://{SERVER_URL.split('//')[1]}/ws-audio")
 
-# HTML template for dashboard (original style, with reset button)
+# HTML template for dashboard (updated WS URL)
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head><title>Free Fire AI Assistant</title></head>
 <body>
     <h1>Latest Screenshots (Last 5)</h1>
-    <p>Connect your client app to wss://your-app.onrender.com/ws-audio for real-time audio.</p>
+    <p>Server: https://practice-ppaz.onrender.com</p>
+    <p>Connect your client app to wss://practice-ppaz.onrender.com/ws-audio for real-time audio.</p>
+    <p>To keep server alive: Ping /ping every 10 min (e.g., via UptimeRobot).</p>
     <p>Total processed: {{ total }}</p>
     {% for file in files %}
         <div>
@@ -102,6 +108,12 @@ DASHBOARD_TEMPLATE = """
 </body>
 </html>
 """
+
+@app.route('/ping', methods=['GET'])
+def ping():
+    """Keep-alive endpoint - ping this every 10 min to prevent Render sleep."""
+    logger.info("🏓 Ping received - server alive!")
+    return jsonify({"status": "alive", "server": SERVER_URL}), 200
 
 @app.route('/upload', methods=['POST'])
 def upload_screenshot():
@@ -160,19 +172,19 @@ def upload_screenshot():
                         audio_path = os.path.join(AUDIO_DIR, audio_filename)
                         tts.save(audio_path)
                         
-                        # Audio URL (static serve on Render)
-                        audio_url = f"/static/audio/{audio_filename}"
+                        # Audio URL (static serve on Render, full URL for client)
+                        audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
                         size_audio = os.path.getsize(audio_path)
                         logger.info("🎵 Audio generated: %s, Size: %d bytes", audio_url, size_audio)
                         
-                        # Push to connected clients via SocketIO (like your JS sender, but server-push)
-                        # Equivalent: Server acts as sender to connected WS clients
+                        # Push to connected clients via SocketIO (server-push to WS clients)
                         socketio.emit('audio_response', {
                             'url': audio_url, 
                             'text': assistant_response,
                             'timestamp': timestamp
                         }, namespace='/ws-audio')
-                        logger.info("📡 Audio pushed to %d connected clients via WS", len(socketio.server.manager.rooms['/ws-audio']))
+                        # Note: In threading mode, rooms len may not be accurate, but emit broadcasts
+                        logger.info("📡 Audio pushed via WS to all connected clients (threading mode)")
                     else:
                         logger.info("🤐 No important event - staying silent (as per rules)")
                 else:
@@ -210,7 +222,7 @@ def serve_image(filename):
     logger.warning("⚠️ Image not found: %s", filename)
     return "File not found", 404
 
-# Serve audio (static)
+# Serve audio (static) - Note: /static/audio/<file> serves files
 @app.route('/static/audio/<filename>')
 def serve_audio(filename):
     filepath = os.path.join(AUDIO_DIR, filename)
@@ -239,7 +251,7 @@ def dashboard():
     files = [f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')]
     files.sort(reverse=True)
     files = files[:5]
-    total = len(os.listdir(SAVE_DIR))
+    total = len([f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')])  # Fix: only count jpg
     logger.info("📋 Dashboard showing %d files, total: %d", len(files), total)
     return render_template_string(DASHBOARD_TEMPLATE, files=files, total=total)
 
@@ -247,7 +259,7 @@ def dashboard():
 @socketio.on('connect', namespace='/ws-audio')
 def handle_connect():
     logger.info("🔌 Client connected to /ws-audio: %s", request.sid)
-    emit('connected', {'data': 'Connected to AI audio stream'})
+    emit('connected', {'data': 'Connected to AI audio stream at https://practice-ppaz.onrender.com'})
 
 @socketio.on('disconnect', namespace='/ws-audio')
 def handle_disconnect():
@@ -255,5 +267,5 @@ def handle_disconnect():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Starting server on port {port} (Render free tier compatible)")
+    logger.info(f"🚀 Starting server on port {port} (Render free tier compatible, threading mode)")
     socketio.run(app, host='0.0.0.0', port=port, debug=False)  # debug=False for prod
