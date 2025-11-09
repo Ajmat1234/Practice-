@@ -1,7 +1,5 @@
-# app.py - Fixed for Python 3.13 compatibility: Switched to async_mode='threading' (no eventlet needed)
-# Added /ping endpoint for keep-alive pings (use UptimeRobot to ping every 10 min)
-# Model: gemini-2.5-flash (confirmed available in 2025)
-# Server URL: https://practice-ppaz.onrender.com (updated in dashboard)
+# app.py - Fixed Gemini API: 'content' instead of 'contents' (library expects singular)
+# Other fixes: Ensured total count only JPGs; full URL for audio; gemini-2.5-flash confirmed for 2025
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
 from flask_socketio import SocketIO, emit
 import os
@@ -21,8 +19,7 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB limit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret')
 
-# SocketIO: Switched to 'threading' for Python 3.13 compatibility (no eventlet patching issues)
-# Clients connect to wss://practice-ppaz.onrender.com/ws-audio
+# SocketIO: Threading mode for Python 3.13 compatibility
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
 
 # Configure Gemini - API key from env
@@ -50,7 +47,7 @@ def load_system_instruction():
             context = json.load(f)
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',  # Updated to 2.5-flash (fast, available in 2025)
+            model_name='gemini-2.5-flash',  # Confirmed available in 2025 (e.g., preview-09-2025)
             system_instruction=system_instruction
         )
         chat = model.start_chat()
@@ -151,13 +148,13 @@ def upload_screenshot():
                 
                 # Prepare content (original prompt style)
                 prompt_text = "Analyze this new Free Fire screenshot for any critical game event: enemies, blue zone, low HP, teammate down, damage to enemy, etc. Respond only if important (short Hindi advice); else empty string."
-                contents = [prompt_text, current_image]
+                content_list = [prompt_text, current_image]  # List for content
                 logger.info("📝 Prompt prepared: '%s'", prompt_text)
                 
-                # Send to chat (persistent until reset)
+                # Send to chat (persistent until reset) - FIXED: content=content_list (singular)
                 if chat:
                     logger.info("💬 Sending to Gemini chat session...")
-                    response = chat.send_message(contents=contents)
+                    response = chat.send_message(content=content_list)  # Changed 'contents' to 'content'
                     assistant_response = response.text.strip()
                     logger.info("📨 Gemini raw response: '%s'", assistant_response)
                     
@@ -183,7 +180,6 @@ def upload_screenshot():
                             'text': assistant_response,
                             'timestamp': timestamp
                         }, namespace='/ws-audio')
-                        # Note: In threading mode, rooms len may not be accurate, but emit broadcasts
                         logger.info("📡 Audio pushed via WS to all connected clients (threading mode)")
                     else:
                         logger.info("🤐 No important event - staying silent (as per rules)")
@@ -248,10 +244,9 @@ def reset_chat():
 @app.route('/', methods=['GET'])
 def dashboard():
     logger.info("📊 Dashboard accessed")
-    files = [f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')]
-    files.sort(reverse=True)
-    files = files[:5]
-    total = len([f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')])  # Fix: only count jpg
+    all_files = [f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')]
+    files = sorted(all_files, reverse=True)[:5]
+    total = len(all_files)  # Fixed: only count JPGs
     logger.info("📋 Dashboard showing %d files, total: %d", len(files), total)
     return render_template_string(DASHBOARD_TEMPLATE, files=files, total=total)
 
