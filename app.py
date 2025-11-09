@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
-from flask_socketio import SocketIO, emit  # Removed: No longer used
 import os
 import google.generativeai as genai
 from PIL import Image
@@ -9,9 +8,10 @@ import io
 import json
 import logging
 import shutil  # For cleanup
-import asyncio  # Added: For async WS
-import websockets  # Added: Plain WebSocket for push
-from concurrent.futures import ThreadPoolExecutor  # For async thread
+import asyncio  # For async WS
+from flask_sock import Sock  # For plain WebSocket support in Flask
+from concurrent.futures import ThreadPoolExecutor  # For async thread if needed
+import websockets  # Keep for compatibility, but use flask-sock
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1000 * 1024  # 10MB limit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret')
+
+# Flask-Sock for plain WebSockets
+sock = Sock(app)
 
 # Configure Gemini
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
@@ -36,6 +39,9 @@ SAVE_DIR = './screenshots'
 AUDIO_DIR = './static/audio'
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
+
+# Track connected WS clients (set of WebSocket objects)
+clients = set()
 
 # Cleanup old audios
 def cleanup_old_audios(max_files=50):
@@ -181,8 +187,11 @@ def upload_screenshot():
                         size_audio = os.path.getsize(audio_path)
                         logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi')", audio_url, size_audio)
                         
-                        # Push to connected WS clients (plain WebSocket)
-                        asyncio.create_task(send_audio_to_clients(audio_url, assistant_response))
+                        # Push to connected WS clients (using flask-sock's event loop)
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(send_audio_to_clients(audio_url, assistant_response))
+                        loop.close()
                         
                         cleanup_old_audios()
                     else:
@@ -212,40 +221,34 @@ def upload_screenshot():
         logger.error("❌ General Upload Error: %s", str(e))
         return jsonify({"error": str(e)}), 500
 
-# Plain WebSocket server for /ws-audio (async task)
-async def handle_ws_client(ws, path):
-    logger.info("🔌 Client connected to /ws-audio")
-    try:
-        async for message in ws:
-            logger.info("📨 WS message received: %s", message)
-            # Handle incoming if needed (e.g., ping/pong)
-    except websockets.exceptions.ConnectionClosed:
-        logger.info("🔌 Client disconnected from /ws-audio")
-    except Exception as e:
-        logger.error("WS error: %s", e)
-
-def send_audio_to_clients(audio_url, text):
-    # Send to all connected clients
+# Async function to send audio to all clients
+async def send_audio_to_clients(audio_url, text):
+    message = json.dumps({'audio_url': audio_url, 'text': text})
+    disconnected = set()
     for client in clients:
         try:
-            asyncio.create_task(client.send(json.dumps({'audio_url': audio_url, 'text': text})))
+            await client.send(message)
+            logger.info(f"📤 Sent audio to client: {audio_url}")
         except Exception as e:
-            logger.error("Failed to send to client: %s", e)
+            logger.error(f"Failed to send to client: {e}")
+            disconnected.add(client)
+    clients -= disconnected  # Remove dead clients
 
-clients = set()  # Track connected clients
-
-@app.route('/ws-audio')
-async def ws_audio():
-    # Start WS server in thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    start_server = websockets.serve(handle_ws_client, "0.0.0.0", 5000)  # Port 5000 or env PORT
-    loop.run_until_complete(start_server)
-    loop.run_forever()
-
-# Run WS in background thread
-executor = ThreadPoolExecutor(1)
-executor.submit(lambda: asyncio.run(ws_audio()))
+# Plain WebSocket route for /ws-audio using flask-sock
+@sock.route('/ws-audio')
+async def ws_audio(ws):
+    logger.info("🔌 Client connected to /ws-audio")
+    clients.add(ws)
+    try:
+        # Listen for messages (e.g., pings) without blocking
+        async for message in ws:
+            logger.info(f"📨 WS message received: {message}")
+            # Handle if needed (e.g., pong)
+    except Exception as e:
+        logger.error(f"WS error: {e}")
+    finally:
+        clients.discard(ws)
+        logger.info("🔌 Client disconnected from /ws-audio")
 
 # Other routes (same as your code)
 @app.route('/image/<filename>')
@@ -290,4 +293,4 @@ def dashboard():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"🚀 Starting server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    sock.run(app, host='0.0.0.0', port=port, debug=False)
