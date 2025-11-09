@@ -60,7 +60,7 @@ def load_system_instruction():
             context = json.load(f)
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         model = genai.GenerativeModel(
-            model_name='gemini-2.0-flash-exp',  # 2025 model (fallback to 'gemini-1.5-flash')
+            model_name='gemini-2.5-flash',  # 2025 model (fallback to 'gemini-1.5-flash')
             system_instruction=system_instruction
         )
         chat = model.start_chat()
