@@ -1,6 +1,5 @@
-# app.py - Fixed TTS: lang='hi' (hi-IN not supported in gTTS); Strengthened prompt for pure Devanagari (no English/Latin words); Enhanced logging for WS connects; Cleanup on upload too for disk safety
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit  # Removed: No longer used
 import os
 import google.generativeai as genai
 from PIL import Image
@@ -10,35 +9,35 @@ import io
 import json
 import logging
 import shutil  # For cleanup
+import asyncio  # Added: For async WS
+import websockets  # Added: Plain WebSocket for push
+from concurrent.futures import ThreadPoolExecutor  # For async thread
 
-# Setup logging for detailed logs (visible in Render console)
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB limit
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1000 * 1024  # 10MB limit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret')
 
-# SocketIO: Threading mode for Python 3.13 compatibility; Clients must connect to receive pushes
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
-
-# Configure Gemini - API key from env
+# Configure Gemini
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 if not GEMINI_API_KEY:
-    logger.error("❌ GEMINI_API_KEY not set in environment!")
+    logger.error("❌ GEMINI_API_KEY not set!")
     raise ValueError("GEMINI_API_KEY required")
 
 genai.configure(api_key=GEMINI_API_KEY)
 system_instruction = None
 chat = None
 
-# Directories (Render-compatible, relative paths)
+# Directories
 SAVE_DIR = './screenshots'
 AUDIO_DIR = './static/audio'
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# Cleanup old audios on startup (keep last 50 to avoid Render disk limits)
+# Cleanup old audios
 def cleanup_old_audios(max_files=50):
     audio_files = sorted([f for f in os.listdir(AUDIO_DIR) if f.endswith('.mp3')], reverse=True)
     if len(audio_files) > max_files:
@@ -48,7 +47,7 @@ def cleanup_old_audios(max_files=50):
 
 cleanup_old_audios()
 
-# Load system instruction from context.json (once on startup, reset on new game)
+# Load system instruction
 def load_system_instruction():
     global system_instruction, chat
     logger.info("🔄 Loading system instruction from context.json...")
@@ -57,14 +56,14 @@ def load_system_instruction():
             context = json.load(f)
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',  # Confirmed available in 2025 (e.g., preview-09-2025)
+            model_name='gemini-2.0-flash-exp',  # 2025 model (fallback to 'gemini-1.5-flash')
             system_instruction=system_instruction
         )
         chat = model.start_chat()
-        logger.info("✅ System instruction loaded and new chat session started with gemini-2.5-flash.")
+        logger.info("✅ System instruction loaded and new chat session started.")
     except FileNotFoundError:
-        logger.error("❌ context.json not found. Using fallback and creating file.")
-        # Fallback context (basic for safety)
+        logger.error("❌ context.json not found. Using fallback.")
+        # Fallback context (same as your code)
         default_context = {
             "title": "Free Fire AI Assistant Context",
             "ai_instructions": {
@@ -83,16 +82,14 @@ def load_system_instruction():
         }
         with open('context.json', 'w', encoding='utf-8') as f:
             json.dump(default_context, f, ensure_ascii=False, indent=2)
-        load_system_instruction()  # Retry load
+        load_system_instruction()
     except Exception as e:
         logger.error(f"❌ Error loading context: {e}")
 
-# Initialize on startup
 load_system_instruction()
 SERVER_URL = "https://practice-ppaz.onrender.com"
-logger.info(f"🚀 Server initialized at {SERVER_URL}. Ready for screenshots. WS: wss://{SERVER_URL.split('//')[1]}/ws-audio (mobile app must connect as client to receive audio pushes)")
+logger.info(f"🚀 Server initialized at {SERVER_URL}. Ready for screenshots. WS: wss://{SERVER_URL.split('//')[1]}/ws-audio")
 
-# HTML template for dashboard (updated WS URL)
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -118,7 +115,6 @@ DASHBOARD_TEMPLATE = """
 
 @app.route('/ping', methods=['GET'])
 def ping():
-    """Keep-alive endpoint - ping this every 10 min to prevent Render sleep."""
     logger.info("🏓 Ping received - server alive!")
     return jsonify({"status": "alive", "server": SERVER_URL}), 200
 
@@ -146,28 +142,21 @@ def upload_screenshot():
             size = os.path.getsize(filepath)
             logger.info("💾 Screenshot saved: %s, Size: %d bytes at %s", filename, size, filepath)
             
-            # Process with Gemini (only if chat ready)
+            # Process with Gemini
             audio_url = None
             response_text = None
             try:
                 logger.info("🤖 Starting Gemini analysis for %s", filename)
                 
-                # Load image
                 current_image = Image.open(filepath)
                 logger.info("🖼️ Image loaded successfully (PIL format)")
                 
-                # Prepare content (original prompt style) - FIXED: Pure Devanagari, no English/Latin
-                prompt_text = "इस नए फ्री फायर स्क्रीनशॉट का विश्लेषण करें: दुश्मन, नीला जोन, कम एचपी, टीममेट डाउन, दुश्मन को नुकसान आदि महत्वपूर्ण घटनाओं के लिए। यदि महत्वपूर्ण हो तो केवल उत्तर दें (संक्षिप्त देवनागरी लिपि में शुद्ध हिंदी सलाह, कोई अंग्रेजी शब्द न हो जैसे 'ग्रेनेड फेंको' की जगह 'ग्रेनेड फेंको' नहीं बल्कि शुद्ध हिंदी); अन्यथा खाली स्ट्रिंग।"
-                content_list = [prompt_text, current_image]  # List for content
+                prompt_text = "इस नए फ्री फायर स्क्रीनशॉट का विश्लेषण करें: दुश्मन, नीला जोन, कम एचपी, टीममेट डाउन, दुश्मन को नुकसान आदि महत्वपूर्ण घटनाओं के लिए। यदि महत्वपूर्ण हो तो केवल उत्तर दें (संक्षिप्त देवनागरी लिपि में शुद्ध हिंदी सलाह, कोई अंग्रेजी शब्द न हो); अन्यथा खाली स्ट्रिंग।"
+                content_list = [prompt_text, current_image]
                 logger.info("📝 Prompt prepared: Pure Devanagari enforced")
                 
-                # Send to chat (persistent until reset)
                 if chat:
-                    logger.info("💬 Sending to Gemini chat session...")
                     response = chat.send_message(content=content_list)
-                    logger.info(f"📨 Gemini full response object: {response}")
-                    
-                    # Enhanced extraction: Handle empty candidates/parts safely
                     assistant_response = ""
                     if response.candidates and len(response.candidates) > 0:
                         candidate = response.candidates[0]
@@ -175,47 +164,29 @@ def upload_screenshot():
                             part = candidate.content.parts[0]
                             if hasattr(part, 'text') and part.text:
                                 assistant_response = part.text.strip()
-                            logger.info(f"🔍 Candidate details: finish_reason={candidate.finish_reason}, parts={len(candidate.content.parts)}")
-                        else:
-                            logger.warning("⚠️ No parts in candidate - possible empty response")
-                    else:
-                        logger.warning("⚠️ No candidates in response - model stopped early (finish_reason likely STOP)")
-                    
                     logger.info("📨 Gemini extracted response: '%s'", assistant_response)
                     
                     if assistant_response:
                         response_text = assistant_response
                         logger.info("🔍 Important event detected: '%s'", assistant_response)
                         
-                        # Generate TTS audio (fast, Hindi with 'hi' for compatibility - no 'hi-IN')
+                        # Generate TTS (gTTS 'hi' lang)
                         logger.info("🔊 Generating TTS audio...")
-                        try:
-                            tts = gTTS(text=assistant_response, lang='hi', slow=False)
-                            audio_filename = f"audio_{timestamp}.mp3"
-                            audio_path = os.path.join(AUDIO_DIR, audio_filename)
-                            tts.save(audio_path)
-                            
-                            # Audio URL (static serve on Render, full URL for client)
-                            audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
-                            size_audio = os.path.getsize(audio_path)
-                            logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi')", audio_url, size_audio)
-                            
-                            # Cleanup old audios after save
-                            cleanup_old_audios()
-                        except Exception as tts_err:
-                            logger.error("❌ TTS Generation Error: %s (text was: '%s')", str(tts_err), assistant_response)
-                            audio_url = None
+                        tts = gTTS(text=assistant_response, lang='hi', slow=False)
+                        audio_filename = f"audio_{timestamp}.mp3"
+                        audio_path = os.path.join(AUDIO_DIR, audio_filename)
+                        tts.save(audio_path)
                         
-                        # Push to connected clients via SocketIO (server-push to WS clients) - Mobile app must be connected to receive
-                        if audio_url:
-                            socketio.emit('audio_response', {
-                                'url': audio_url, 
-                                'text': assistant_response,
-                                'timestamp': timestamp
-                            }, namespace='/ws-audio')
-                            logger.info("📡 Audio pushed via WS to all connected clients (threading mode) - Ensure mobile app is connected to wss://practice-ppaz.onrender.com/ws-audio")
+                        audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
+                        size_audio = os.path.getsize(audio_path)
+                        logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi')", audio_url, size_audio)
+                        
+                        # Push to connected WS clients (plain WebSocket)
+                        asyncio.create_task(send_audio_to_clients(audio_url, assistant_response))
+                        
+                        cleanup_old_audios()
                     else:
-                        logger.info("🤐 No important event - staying silent (as per rules)")
+                        logger.info("🤐 No important event - staying silent")
                 else:
                     logger.error("❌ Chat session not initialized")
                     audio_url = None
@@ -241,7 +212,42 @@ def upload_screenshot():
         logger.error("❌ General Upload Error: %s", str(e))
         return jsonify({"error": str(e)}), 500
 
-# Serve images (original)
+# Plain WebSocket server for /ws-audio (async task)
+async def handle_ws_client(ws, path):
+    logger.info("🔌 Client connected to /ws-audio")
+    try:
+        async for message in ws:
+            logger.info("📨 WS message received: %s", message)
+            # Handle incoming if needed (e.g., ping/pong)
+    except websockets.exceptions.ConnectionClosed:
+        logger.info("🔌 Client disconnected from /ws-audio")
+    except Exception as e:
+        logger.error("WS error: %s", e)
+
+def send_audio_to_clients(audio_url, text):
+    # Send to all connected clients
+    for client in clients:
+        try:
+            asyncio.create_task(client.send(json.dumps({'audio_url': audio_url, 'text': text})))
+        except Exception as e:
+            logger.error("Failed to send to client: %s", e)
+
+clients = set()  # Track connected clients
+
+@app.route('/ws-audio')
+async def ws_audio():
+    # Start WS server in thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    start_server = websockets.serve(handle_ws_client, "0.0.0.0", 5000)  # Port 5000 or env PORT
+    loop.run_until_complete(start_server)
+    loop.run_forever()
+
+# Run WS in background thread
+executor = ThreadPoolExecutor(1)
+executor.submit(lambda: asyncio.run(ws_audio()))
+
+# Other routes (same as your code)
 @app.route('/image/<filename>')
 def serve_image(filename):
     filepath = os.path.join(SAVE_DIR, filename)
@@ -251,50 +257,37 @@ def serve_image(filename):
     logger.warning("⚠️ Image not found: %s", filename)
     return "File not found", 404
 
-# Serve audio (static) - Note: /static/audio/<file> serves files
 @app.route('/static/audio/<filename>')
 def serve_audio(filename):
     filepath = os.path.join(AUDIO_DIR, filename)
     if os.path.exists(filepath):
-        logger.info("🎵 Serving audio: %s (exists: yes, path: %s)", filename, filepath)
+        logger.info("🎵 Serving audio: %s", filename)
         return send_from_directory(AUDIO_DIR, filename)
-    logger.warning("⚠️ Audio not found: %s (path: %s - check if generated)", filename, filepath)
+    logger.warning("⚠️ Audio not found: %s", filename)
     return "File not found", 404
 
-# Reset chat for new game (reloads context, new session)
 @app.route('/reset-chat', methods=['POST'])
 def reset_chat():
-    logger.info("🔄 Reset chat requested - starting new session for game")
+    logger.info("🔄 Reset chat requested")
     try:
-        load_system_instruction()  # Reloads and starts fresh chat
-        cleanup_old_audios()  # Clean on reset too
+        load_system_instruction()
+        cleanup_old_audios()
         logger.info("✅ Chat reset successful")
         return jsonify({"success": True, "message": "Chat reset for new game."}), 200
     except Exception as e:
         logger.error("❌ Reset error: %s", str(e))
         return jsonify({"error": str(e)}), 500
 
-# Dashboard (original, with latest 5)
 @app.route('/', methods=['GET'])
 def dashboard():
     logger.info("📊 Dashboard accessed")
     all_files = [f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')]
     files = sorted(all_files, reverse=True)[:5]
-    total = len(all_files)  # Fixed: only count JPGs
+    total = len(all_files)
     logger.info("📋 Dashboard showing %d files, total: %d", len(files), total)
     return render_template_string(DASHBOARD_TEMPLATE, files=files, total=total)
 
-# SocketIO events (for WS-audio namespace) - Mobile app connects here to receive
-@socketio.on('connect', namespace='/ws-audio')
-def handle_connect():
-    logger.info("🔌 Client connected to /ws-audio: %s (now %d connected - audio pushes will reach)", request.sid, len(socketio.server.manager.rooms.get('/ws-audio', [])))
-    emit('connected', {'data': 'Connected to AI audio stream at https://practice-ppaz.onrender.com - Ready for pushes!'})
-
-@socketio.on('disconnect', namespace='/ws-audio')
-def handle_disconnect():
-    logger.info("🔌 Client disconnected from /ws-audio: %s (now %d connected)", request.sid, len(socketio.server.manager.rooms.get('/ws-audio', [])) - 1)
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Starting server on port {port} (Render free tier compatible, threading mode)")
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)  # debug=False for prod
+    logger.info(f"🚀 Starting server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
