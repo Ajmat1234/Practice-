@@ -1,4 +1,4 @@
-# app.py
+# app.py - Updated with more logs, original image upload intact, Python WS equivalent via SocketIO for audio push
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
 from flask_socketio import SocketIO, emit
 import os
@@ -8,41 +8,53 @@ from gtts import gTTS
 from datetime import datetime
 import io
 import json
+import logging
+
+# Setup logging for detailed logs (visible in Render console)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB limit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret')
 
-# SocketIO for real-time audio notifications
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+# SocketIO for real-time audio notifications (Python equivalent of your JS WS sender)
+# Clients connect to /ws-audio (via SocketIO), server pushes audio_url when ready
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', logger=True, engineio_logger=True)
 
-# Configure Gemini
-genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
+# Configure Gemini - API key from env
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+if not GEMINI_API_KEY:
+    logger.error("❌ GEMINI_API_KEY not set in environment!")
+    raise ValueError("GEMINI_API_KEY required")
+
+genai.configure(api_key=GEMINI_API_KEY)
 system_instruction = None
 chat = None
 
-# Directories
+# Directories (Render-compatible, relative paths)
 SAVE_DIR = './screenshots'
 AUDIO_DIR = './static/audio'
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# Load system instruction from context.json
+# Load system instruction from context.json (once on startup, reset on new game)
 def load_system_instruction():
     global system_instruction, chat
+    logger.info("🔄 Loading system instruction from context.json...")
     try:
         with open('context.json', 'r', encoding='utf-8') as f:
             context = json.load(f)
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash',
+            model_name='gemini-2.5-flash',  # Fast for free tier
             system_instruction=system_instruction
         )
         chat = model.start_chat()
-        print("✅ System instruction loaded and chat initialized.")
+        logger.info("✅ System instruction loaded and new chat session started.")
     except FileNotFoundError:
-        print("❌ context.json not found. Creating a default one.")
-        # Fallback: Create basic file
+        logger.error("❌ context.json not found. Using fallback and creating file.")
+        # Fallback context (basic for safety)
         default_context = {
             "title": "Free Fire AI Assistant Context",
             "ai_instructions": {
@@ -55,25 +67,29 @@ def load_system_instruction():
                     "अगर player की HP 50 से कम हो तो कहो: 'Medkit लगाओ!'",
                     "अगर 3+ enemies पास में तो कहो: 'छिप जाओ और teammates को बुलाओ!'",
                     "लैंडिंग, लूटिंग या शांत समय में कुछ न बोलो। Response हमेशा छोटा, सटीक और हिंदी में।",
-                    "जब कुछ महत्वपूर्ण न हो तो कोई response न दो।"
+                    "जब कुछ भी महत्वपूर्ण न हो तो कोई response न दो।"
                 ]
             }
         }
         with open('context.json', 'w', encoding='utf-8') as f:
             json.dump(default_context, f, ensure_ascii=False, indent=2)
-        load_system_instruction()  # Retry
+        load_system_instruction()  # Retry load
+    except Exception as e:
+        logger.error(f"❌ Error loading context: {e}")
 
 # Initialize on startup
 load_system_instruction()
+logger.info("🚀 Server initialized. Ready for screenshots.")
 
-# HTML template for dashboard (optional, to view images)
+# HTML template for dashboard (original style, with reset button)
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head><title>Free Fire AI Assistant</title></head>
 <body>
     <h1>Latest Screenshots (Last 5)</h1>
-    <p>Connect your client to /ws-audio for real-time audio responses.</p>
+    <p>Connect your client app to wss://your-app.onrender.com/ws-audio for real-time audio.</p>
+    <p>Total processed: {{ total }}</p>
     {% for file in files %}
         <div>
             <h3>{{ file }}</h3>
@@ -82,20 +98,24 @@ DASHBOARD_TEMPLATE = """
         </div>
         <hr>
     {% endfor %}
-    <p><a href="/">Refresh</a> | <a href="/reset-chat">Reset Chat (New Game)</a></p>
+    <p><a href="/">Refresh</a> | <button onclick="fetch('/reset-chat', {method: 'POST'}).then(() => alert('Chat reset for new game!'))">Reset for New Game</button></p>
 </body>
 </html>
 """
 
 @app.route('/upload', methods=['POST'])
 def upload_screenshot():
-    print("POST to /upload received")
+    logger.info("📥 POST to /upload received. Headers: %s", dict(request.headers))
     try:
         if 'file' not in request.files:
+            logger.warning("⚠️ No file part in request")
             return jsonify({"error": "No file part"}), 400
         
         file = request.files['file']
+        logger.info("📄 File received: %s, size: %d bytes", file.filename, file.content_length or 0)
+        
         if file.filename == '':
+            logger.warning("⚠️ No selected file")
             return jsonify({"error": "No selected file"}), 400
         
         if file and file.filename.lower().endswith('.jpg'):
@@ -105,79 +125,135 @@ def upload_screenshot():
             file.save(filepath)
             
             size = os.path.getsize(filepath)
-            print(f"✅ Screenshot saved: {filename}, Size: {size} bytes")
+            logger.info("💾 Screenshot saved: %s, Size: %d bytes at %s", filename, size, filepath)
             
-            # Process with Gemini
+            # Process with Gemini (only if chat ready)
             audio_url = None
+            response_text = None
             try:
+                logger.info("🤖 Starting Gemini analysis for %s", filename)
+                
                 # Load image
                 current_image = Image.open(filepath)
+                logger.info("🖼️ Image loaded successfully (PIL format)")
                 
-                # Prepare content
-                prompt_text = "Analyze this Free Fire screenshot for critical events like enemies, blue zone, HP, teammate down, etc. Respond only if something important; else empty string."
+                # Prepare content (original prompt style)
+                prompt_text = "Analyze this new Free Fire screenshot for any critical game event: enemies, blue zone, low HP, teammate down, damage to enemy, etc. Respond only if important (short Hindi advice); else empty string."
                 contents = [prompt_text, current_image]
+                logger.info("📝 Prompt prepared: '%s'", prompt_text)
                 
-                # Send to chat
+                # Send to chat (persistent until reset)
                 if chat:
+                    logger.info("💬 Sending to Gemini chat session...")
                     response = chat.send_message(contents=contents)
                     assistant_response = response.text.strip()
+                    logger.info("📨 Gemini raw response: '%s'", assistant_response)
                     
                     if assistant_response:
-                        print(f"🤖 Gemini Response: {assistant_response}")
+                        response_text = assistant_response
+                        logger.info("🔍 Important event detected: '%s'", assistant_response)
                         
-                        # Generate TTS audio
+                        # Generate TTS audio (fast, Hindi)
+                        logger.info("🔊 Generating TTS audio...")
                         tts = gTTS(text=assistant_response, lang='hi', slow=False)
                         audio_filename = f"audio_{timestamp}.mp3"
                         audio_path = os.path.join(AUDIO_DIR, audio_filename)
                         tts.save(audio_path)
                         
-                        # Audio URL (Render serves static/)
+                        # Audio URL (static serve on Render)
                         audio_url = f"/static/audio/{audio_filename}"
-                        print(f"🔊 Audio generated: {audio_url}")
+                        size_audio = os.path.getsize(audio_path)
+                        logger.info("🎵 Audio generated: %s, Size: %d bytes", audio_url, size_audio)
                         
-                        # Emit via SocketIO to connected clients
-                        socketio.emit('audio_response', {'url': audio_url, 'text': assistant_response})
+                        # Push to connected clients via SocketIO (like your JS sender, but server-push)
+                        # Equivalent: Server acts as sender to connected WS clients
+                        socketio.emit('audio_response', {
+                            'url': audio_url, 
+                            'text': assistant_response,
+                            'timestamp': timestamp
+                        }, namespace='/ws-audio')
+                        logger.info("📡 Audio pushed to %d connected clients via WS", len(socketio.server.manager.rooms['/ws-audio']))
                     else:
-                        print("🤖 No important event - silent.")
+                        logger.info("🤐 No important event - staying silent (as per rules)")
                 else:
-                    print("❌ Chat not initialized.")
+                    logger.error("❌ Chat session not initialized")
+                    audio_url = None
                     
             except Exception as ai_err:
-                print(f"❌ AI Processing Error: {ai_err}")
+                logger.error("❌ AI Processing Error: %s", str(ai_err))
                 audio_url = None
+                response_text = None
             
+            logger.info("✅ Upload & process complete for %s. Audio: %s", filename, audio_url or "None")
             return jsonify({
                 "success": True,
                 "filename": filename,
                 "size": size,
                 "audio_url": audio_url,
-                "message": "Processed successfully!"
+                "response_text": response_text,
+                "message": "Screenshot processed successfully!"
             }), 200
         else:
+            logger.warning("⚠️ Invalid file type: %s (must be JPG)", file.filename)
             return jsonify({"error": "Invalid file type - must be JPG"}), 400
     except Exception as e:
-        print(f"❌ Upload Error: {str(e)}")
+        logger.error("❌ General Upload Error: %s", str(e))
         return jsonify({"error": str(e)}), 500
 
+# Serve images (original)
 @app.route('/image/<filename>')
 def serve_image(filename):
     filepath = os.path.join(SAVE_DIR, filename)
     if os.path.exists(filepath):
+        logger.info("🖼️ Serving image: %s", filename)
         return send_from_directory(SAVE_DIR, filename)
+    logger.warning("⚠️ Image not found: %s", filename)
     return "File not found", 404
 
+# Serve audio (static)
+@app.route('/static/audio/<filename>')
+def serve_audio(filename):
+    filepath = os.path.join(AUDIO_DIR, filename)
+    if os.path.exists(filepath):
+        logger.info("🎵 Serving audio: %s", filename)
+        return send_from_directory(AUDIO_DIR, filename)
+    logger.warning("⚠️ Audio not found: %s", filename)
+    return "File not found", 404
+
+# Reset chat for new game (reloads context, new session)
 @app.route('/reset-chat', methods=['POST'])
 def reset_chat():
-    global chat
-    load_system_instruction()  # Reloads and starts new chat
-    return jsonify({"success": True, "message": "Chat reset for new game."}), 200
+    logger.info("🔄 Reset chat requested - starting new session for game")
+    try:
+        load_system_instruction()  # Reloads and starts fresh chat
+        logger.info("✅ Chat reset successful")
+        return jsonify({"success": True, "message": "Chat reset for new game."}), 200
+    except Exception as e:
+        logger.error("❌ Reset error: %s", str(e))
+        return jsonify({"error": str(e)}), 500
 
+# Dashboard (original, with latest 5)
 @app.route('/', methods=['GET'])
 def dashboard():
+    logger.info("📊 Dashboard accessed")
     files = [f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')]
     files.sort(reverse=True)
     files = files[:5]
-    return render_template_string(DASHBOARD_TEMPLATE, files=files)
+    total = len(os.listdir(SAVE_DIR))
+    logger.info("📋 Dashboard showing %d files, total: %d", len(files), total)
+    return render_template_string(DASHBOARD_TEMPLATE, files=files, total=total)
+
+# SocketIO events (for WS-audio namespace)
+@socketio.on('connect', namespace='/ws-audio')
+def handle_connect():
+    logger.info("🔌 Client connected to /ws-audio: %s", request.sid)
+    emit('connected', {'data': 'Connected to AI audio stream'})
+
+@socketio.on('disconnect', namespace='/ws-audio')
+def handle_disconnect():
+    logger.info("🔌 Client disconnected from /ws-audio: %s", request.sid)
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    logger.info(f"🚀 Starting server on port {port} (Render free tier compatible)")
+    socketio.run(app, host='0.0.0.0', port=port, debug=False)  # debug=False for prod
