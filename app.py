@@ -1,5 +1,5 @@
-# app.py - Fixed Gemini API: 'content' instead of 'contents' (library expects singular)
-# Other fixes: Ensured total count only JPGs; full URL for audio; gemini-2.5-flash confirmed for 2025
+# app.py - Fixed Gemini response handling: Safely extract text if parts exist, else empty string (handles finish_reason=1 / no content)
+# No other changes needed - URLs correct in client app per SS
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
 from flask_socketio import SocketIO, emit
 import os
@@ -151,12 +151,19 @@ def upload_screenshot():
                 content_list = [prompt_text, current_image]  # List for content
                 logger.info("📝 Prompt prepared: '%s'", prompt_text)
                 
-                # Send to chat (persistent until reset) - FIXED: content=content_list (singular)
+                # Send to chat (persistent until reset)
                 if chat:
                     logger.info("💬 Sending to Gemini chat session...")
-                    response = chat.send_message(content=content_list)  # Changed 'contents' to 'content'
-                    assistant_response = response.text.strip()
-                    logger.info("📨 Gemini raw response: '%s'", assistant_response)
+                    response = chat.send_message(content=content_list)
+                    logger.info(f"📨 Gemini full response object: {response}")
+                    
+                    # FIXED: Safely extract text - handle empty/no parts (finish_reason=1)
+                    assistant_response = ""
+                    if response.candidates and response.candidates[0].content.parts:
+                        part_text = response.candidates[0].content.parts[0].text or ""
+                        assistant_response = part_text.strip()
+                    
+                    logger.info("📨 Gemini extracted response: '%s'", assistant_response)
                     
                     if assistant_response:
                         response_text = assistant_response
