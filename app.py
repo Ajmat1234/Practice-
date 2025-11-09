@@ -1,4 +1,4 @@
-# app.py - Enhanced Gemini response extraction: Log full candidate details if empty; gTTS lang='hi-IN' for better Hindi; Added TTS error handling + cleanup old audios (prevent dir bloat on Render free tier)
+# app.py - Fixed TTS: lang='hi' (hi-IN not supported in gTTS); Strengthened prompt for pure Devanagari (no English/Latin words); Enhanced logging for WS connects; Cleanup on upload too for disk safety
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
 from flask_socketio import SocketIO, emit
 import os
@@ -19,7 +19,7 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB limit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret')
 
-# SocketIO: Threading mode for Python 3.13 compatibility
+# SocketIO: Threading mode for Python 3.13 compatibility; Clients must connect to receive pushes
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
 
 # Configure Gemini - API key from env
@@ -90,7 +90,7 @@ def load_system_instruction():
 # Initialize on startup
 load_system_instruction()
 SERVER_URL = "https://practice-ppaz.onrender.com"
-logger.info(f"🚀 Server initialized at {SERVER_URL}. Ready for screenshots. WS: wss://{SERVER_URL.split('//')[1]}/ws-audio")
+logger.info(f"🚀 Server initialized at {SERVER_URL}. Ready for screenshots. WS: wss://{SERVER_URL.split('//')[1]}/ws-audio (mobile app must connect as client to receive audio pushes)")
 
 # HTML template for dashboard (updated WS URL)
 DASHBOARD_TEMPLATE = """
@@ -156,10 +156,10 @@ def upload_screenshot():
                 current_image = Image.open(filepath)
                 logger.info("🖼️ Image loaded successfully (PIL format)")
                 
-                # Prepare content (original prompt style) - Emphasize Hindi
-                prompt_text = "Analyze this new Free Fire screenshot for any critical game event: enemies, blue zone, low HP, teammate down, damage to enemy, etc. Respond only if important (short Hindi advice in pure Devanagari script); else empty string."
+                # Prepare content (original prompt style) - FIXED: Pure Devanagari, no English/Latin
+                prompt_text = "इस नए फ्री फायर स्क्रीनशॉट का विश्लेषण करें: दुश्मन, नीला जोन, कम एचपी, टीममेट डाउन, दुश्मन को नुकसान आदि महत्वपूर्ण घटनाओं के लिए। यदि महत्वपूर्ण हो तो केवल उत्तर दें (संक्षिप्त देवनागरी लिपि में शुद्ध हिंदी सलाह, कोई अंग्रेजी शब्द न हो जैसे 'ग्रेनेड फेंको' की जगह 'ग्रेनेड फेंको' नहीं बल्कि शुद्ध हिंदी); अन्यथा खाली स्ट्रिंग।"
                 content_list = [prompt_text, current_image]  # List for content
-                logger.info("📝 Prompt prepared: '%s'", prompt_text)
+                logger.info("📝 Prompt prepared: Pure Devanagari enforced")
                 
                 # Send to chat (persistent until reset)
                 if chat:
@@ -187,10 +187,10 @@ def upload_screenshot():
                         response_text = assistant_response
                         logger.info("🔍 Important event detected: '%s'", assistant_response)
                         
-                        # Generate TTS audio (fast, Hindi with hi-IN for better pronunciation)
+                        # Generate TTS audio (fast, Hindi with 'hi' for compatibility - no 'hi-IN')
                         logger.info("🔊 Generating TTS audio...")
                         try:
-                            tts = gTTS(text=assistant_response, lang='hi-IN', slow=False)
+                            tts = gTTS(text=assistant_response, lang='hi', slow=False)
                             audio_filename = f"audio_{timestamp}.mp3"
                             audio_path = os.path.join(AUDIO_DIR, audio_filename)
                             tts.save(audio_path)
@@ -198,7 +198,7 @@ def upload_screenshot():
                             # Audio URL (static serve on Render, full URL for client)
                             audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
                             size_audio = os.path.getsize(audio_path)
-                            logger.info("🎵 Audio generated: %s, Size: %d bytes", audio_url, size_audio)
+                            logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi')", audio_url, size_audio)
                             
                             # Cleanup old audios after save
                             cleanup_old_audios()
@@ -206,14 +206,14 @@ def upload_screenshot():
                             logger.error("❌ TTS Generation Error: %s (text was: '%s')", str(tts_err), assistant_response)
                             audio_url = None
                         
-                        # Push to connected clients via SocketIO (server-push to WS clients)
+                        # Push to connected clients via SocketIO (server-push to WS clients) - Mobile app must be connected to receive
                         if audio_url:
                             socketio.emit('audio_response', {
                                 'url': audio_url, 
                                 'text': assistant_response,
                                 'timestamp': timestamp
                             }, namespace='/ws-audio')
-                            logger.info("📡 Audio pushed via WS to all connected clients (threading mode)")
+                            logger.info("📡 Audio pushed via WS to all connected clients (threading mode) - Ensure mobile app is connected to wss://practice-ppaz.onrender.com/ws-audio")
                     else:
                         logger.info("🤐 No important event - staying silent (as per rules)")
                 else:
@@ -256,9 +256,9 @@ def serve_image(filename):
 def serve_audio(filename):
     filepath = os.path.join(AUDIO_DIR, filename)
     if os.path.exists(filepath):
-        logger.info("🎵 Serving audio: %s (exists: yes)", filename)
+        logger.info("🎵 Serving audio: %s (exists: yes, path: %s)", filename, filepath)
         return send_from_directory(AUDIO_DIR, filename)
-    logger.warning("⚠️ Audio not found: %s (path: %s)", filename, filepath)
+    logger.warning("⚠️ Audio not found: %s (path: %s - check if generated)", filename, filepath)
     return "File not found", 404
 
 # Reset chat for new game (reloads context, new session)
@@ -284,15 +284,15 @@ def dashboard():
     logger.info("📋 Dashboard showing %d files, total: %d", len(files), total)
     return render_template_string(DASHBOARD_TEMPLATE, files=files, total=total)
 
-# SocketIO events (for WS-audio namespace)
+# SocketIO events (for WS-audio namespace) - Mobile app connects here to receive
 @socketio.on('connect', namespace='/ws-audio')
 def handle_connect():
-    logger.info("🔌 Client connected to /ws-audio: %s", request.sid)
-    emit('connected', {'data': 'Connected to AI audio stream at https://practice-ppaz.onrender.com'})
+    logger.info("🔌 Client connected to /ws-audio: %s (now %d connected - audio pushes will reach)", request.sid, len(socketio.server.manager.rooms.get('/ws-audio', [])))
+    emit('connected', {'data': 'Connected to AI audio stream at https://practice-ppaz.onrender.com - Ready for pushes!'})
 
 @socketio.on('disconnect', namespace='/ws-audio')
 def handle_disconnect():
-    logger.info("🔌 Client disconnected from /ws-audio: %s", request.sid)
+    logger.info("🔌 Client disconnected from /ws-audio: %s (now %d connected)", request.sid, len(socketio.server.manager.rooms.get('/ws-audio', [])) - 1)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
