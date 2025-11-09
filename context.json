@@ -1,0 +1,69 @@
+{
+  "title": "Free Fire Basic Gameplay Guide (AI Context)",
+  "game_info": {
+    "description": "Free Fire Max एक मोबाइल बैटल रॉयल गेम है जिसमें 50 खिलाड़ी एक-दूसरे से लड़ते हैं और जो आखिरी तक जीवित रहता है, वही विजेता (Booyah) कहलाता है। हर मैच लगभग 10-15 मिनट तक चलता है।",
+    "hp_system": {
+      "max_hp": 200,
+      "damage_effect": "यदि HP 0 पर आ जाए तो खिलाड़ी eliminate हो जाता है।",
+      "medkit_restore": "एक Medkit 80-100 HP तक restore करती है।",
+      "advice": "हमेशा HP को full रखने की कोशिश करें। जब HP 50 से नीचे हो तो medkit लगाएं।"
+    },
+    "blue_zone": {
+      "description": "Blue Zone एक नीला घेरा है जो समय-समय पर सिकुड़ता है और मैप के बाहर के क्षेत्र को खतरनाक बना देता है।",
+      "behavior": "जो खिलाड़ी Blue Zone के बाहर रहते हैं, उन्हें लगातार damage होता है।",
+      "damage_stages": {
+        "early": "5 HP प्रति सेकंड",
+        "mid": "10 HP प्रति सेकंड",
+        "final": "15+ HP प्रति सेकंड"
+      },
+      "warning": "जब Blue Zone आने लगे तो AI खिलाड़ी को तुरंत Safe Zone जाने की चेतावनी देगा, खासकर जब यह आखिरी Zone हो।"
+    }
+  },
+  "characters": {
+    "overview": "गेम में कई active और passive characters होते हैं जिनकी अपनी abilities होती हैं। नीचे सबसे ज़्यादा उपयोग होने वाले characters की abilities दी गई हैं:",
+    "active_characters": {
+      "Skyler": "जब Skyler अपनी ability से पास या दूर किसी enemy पर हमला करता है, तो उस क्षेत्र में लगे सभी Gloo Walls 3-4 सेकंड के अंदर टूट जाते हैं।",
+      "Nero": "158 HP plushie फेंकता है जो 12 सेकंड तक रहता है और 8 मीटर के अंदर enemy को ट्रैक करके explosion करता है। Explosion zone में कोई Gloo Wall नहीं लगाई जा सकती और दुश्मन को 16 HP/s का नुकसान होता है। Cooldown: 45 सेकंड।",
+      "Oscar": "टारगेट दिशा में dash करता है और रास्ते के पहले 3 Gloo Walls को 25 damage देता है। जो दुश्मन सामने आए, उसे भी knockback और damage देता है। Cooldown: 60 सेकंड।",
+      "Santino": "एक mannequin spawn करता है और दुबारा skill दबाने पर उसी जगह teleport करता है।",
+      "Chrono": "एक damage-blocking shield बनाता है। Shield के अंदर रहते हुए बाहर के enemies पर हमला नहीं कर सकते।",
+      "Kessie": "3.5 मीटर का healing zone बनाता है जिसमें 3 HP/s की recovery होती है। Down होने पर खिलाड़ी खुद को revive कर सकता है।",
+      "Tatsuya": "0.3 सेकंड के लिए तेज़ी से आगे dash करता है। 5 सेकंड के cooldown के साथ यह skill दो बार use की जा सकती है।",
+      "Orion": "EP को 300 Crimson Energy में बदलता है और protection mode में जाता है जिसमें damage नहीं होता। पास के enemies से 10 HP absorb करता है। Lasts 3 सेकंड। Cooldown: 3 सेकंड।",
+      "Ignis": "10m चौड़ी जलती हुई दीवार बनाता है जो enemies और Gloo Walls को damage करती है। Enemies को 30 instant damage + 10 damage/s होता है। Gloo Walls को 200 damage/s। Duration: 8 सेकंड।",
+      "Ryden": "Explosive spider छोड़ता है जो दुश्मन को पकड़कर उसकी speed 80% कम करता है और 10 HP/s का bleeding effect देता है। Duration: 30 सेकंड। Cooldown: 75 सेकंड।"
+    }
+  },
+  "combat_and_items": {
+    "grenade": {
+      "description": "Grenade अधिकतम 60 मीटर तक फेंका जा सकता है।",
+      "advice": "यदि कोई enemy घर में छिपा हो या damage हुआ हो, तो grenade ज़रूर फेंको।"
+    },
+    "gloo_wall": {
+      "usage": "Gloo Wall से cover बनाओ जब दुश्मन गोली चलाए या teammate down हो जाए।",
+      "tip": "Revive देते समय हमेशा Gloo Wall लगाओ।"
+    },
+    "launchpad": {
+      "description": "Launchpad से खिलाड़ी तुरंत दूर jump कर सकते हैं।",
+      "mini_launchpad": "Coin shop से खरीदी जाने वाली mini launchpad से zone से निकलना या enemy का पीछा करना आसान होता है।"
+    }
+  },
+  "team_and_identification": {
+    "friend_system": "यदि किसी player के ऊपर 1, 2, 3, 4 या नाम दिखाई दे, तो वह आपका teammate है। एक match में अधिकतम 4 दोस्त एक साथ खेल सकते हैं।",
+    "revive": "जब कोई teammate down हो जाए तो gloo wall लगाकर उसे revive दो।",
+    "coordination": "यदि 3-4 दुश्मन एक साथ दिखें तो छिप जाओ और teammates को पास आने के लिए कहो।"
+  },
+  "ai_instructions": {
+    "general_rules": [
+      "AI हर 3 सेकंड में image observe करेगा लेकिन तभी बोलेगा जब कोई महत्वपूर्ण event दिखे।",
+      "अगर Blue Zone दिखे या shrink हो रहा हो तो तुरंत Safe Zone में जाने के लिए चेतावनी दो।",
+      "अगर enemy घर या cover में है तो grenade फेंकने के लिए कहो।",
+      "अगर player की HP 50 से कम है तो medkit लगाने के लिए कहो।",
+      "अगर 3 या उससे अधिक दुश्मन पास में दिखें तो छिपने और teammates को बुलाने के लिए कहो।",
+      "अगर teammate down हो जाए तो revive देने के लिए कहो।",
+      "अगर enemy (बंदा) दिखे तो तुरंत कहो: 'बंदा देखा है, उसे मारो!'",
+      "अगर enemy को damage दिया है तो कहो: 'Grenade फेंको!'",
+      "जब कुछ भी महत्वपूर्ण न हो तो AI कुछ न बोले। Response छोटा, सटीक, हिंदी में। लैंडिंग/लूटिंग में silent रहो।"
+    ]
+  }
+}
