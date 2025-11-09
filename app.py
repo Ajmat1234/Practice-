@@ -164,10 +164,12 @@ def upload_screenshot():
                     assistant_response = ""
                     if response.candidates and len(response.candidates) > 0:
                         candidate = response.candidates[0]
-                        if candidate.content and candidate.content.parts and len(candidate.content.parts) > 0:
+                        if candidate.content and candidate.content.parts and len(candidate.content.parts) > 0:  # Safe check
                             part = candidate.content.parts[0]
                             if hasattr(part, 'text') and part.text:
                                 assistant_response = part.text.strip()
+                        else:
+                            logger.warning("⚠️ Gemini response parts empty - no text extracted")
                     logger.info("📨 Gemini extracted response: '%s'", assistant_response)
                     
                     if assistant_response:
@@ -216,7 +218,7 @@ def upload_screenshot():
                 "size": size,
                 "audio_url": audio_url,
                 "response_text": response_text,
-                "message": "Screenshot processed successfully!"
+                "message": "Screenshot processed successfully! If no WS, play audio manually: " + (audio_url or "None")  # Fallback hint
             }), 200
         else:
             logger.warning("⚠️ Invalid file type: %s (must be JPG)", file.filename)
@@ -248,19 +250,20 @@ async def send_audio_to_clients(audio_url, text):
 # Plain WebSocket route for /ws-audio using flask-sock
 @sock.route('/ws-audio')
 async def ws_audio(ws):
-    logger.info("🔌 WS Client CONNECTED to /ws-audio - Total clients now: %d", len(clients) + 1)  # Enhanced log
+    client_id = id(ws)  # Unique ID for logging
+    logger.info("🔌 WS Client CONNECTED to /ws-audio (ID: %d) - Total clients now: %d", client_id, len(clients) + 1)  # Enhanced log
     clients.add(ws)
-    logger.info("🔌 Client added to set - Current clients: %d", len(clients))
+    logger.info("🔌 Client %d added to set - Current clients: %d", client_id, len(clients))
     try:
         # Listen for messages (e.g., pings) without blocking
         async for message in ws:
-            logger.info(f"📨 WS message received: {message}")
+            logger.info(f"📨 WS message received from client %d: %s", client_id, message)
             # Handle if needed (e.g., pong)
     except Exception as e:
-        logger.error(f"❌ WS error: {e}")
+        logger.error(f"❌ WS error for client %d: %s", client_id, e)
     finally:
         clients.discard(ws)
-        logger.info("🔌 WS Client DISCONNECTED - Total clients now: %d", len(clients))
+        logger.info("🔌 WS Client %d DISCONNECTED - Total clients now: %d", client_id, len(clients))
 
 # Other routes (same as your code)
 @app.route('/image/<filename>')
