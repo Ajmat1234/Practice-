@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory, render_template_string
+from flask import Flask, request, pyaudioop, jsonify, send_from_directory, render_template_string
 import os
 import google.generativeai as genai
 from PIL import Image
