@@ -6,7 +6,6 @@ from gtts import gTTS
 from datetime import datetime
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from collections import deque
 import threading
 
@@ -60,7 +59,7 @@ def cleanup_old_audios(max_files=50):
 
 cleanup_old_audios()
 
-# Warmup function for models
+# Warmup function for models (sequential for stability)
 def warmup_model(chat, model_name):
     try:
         # Dummy prompt for warmup (no image, simple text)
@@ -83,6 +82,7 @@ def load_system_instruction():
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         
         chats = []
+        initialized_count = 0
         for i, (model_name, api_key) in enumerate(zip(model_names, api_keys)):
             # Temp configure for each
             genai.configure(api_key=api_key)
@@ -90,28 +90,24 @@ def load_system_instruction():
                 model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
                 chat = model.start_chat()
                 chats.append((chat, model_name, api_key))
+                initialized_count += 1
                 logger.info(f"✅ Model {i+1} ({model_name}) initialized with key {1 if i < 2 else 2}")
             except Exception as model_err:
                 logger.error(f"❌ Failed to init model {model_name}: {model_err}")
                 chats.append(None)
         
-        # Warmup all models in parallel (graceful handling)
-        logger.info("🔥 Starting model warmup...")
+        # Sequential warmup (stable, no parallel issues)
+        logger.info("🔥 Starting sequential model warmup...")
         warmup_success = 0
-        with ThreadPoolExecutor(max_workers=len(chats)) as executor:
-            futures = [executor.submit(warmup_model, chat, name) for chat, name, _ in chats if chat]
-            for future in as_completed(futures, timeout=10):  # Reduced timeout
-                try:
-                    if future.result(timeout=3):  # Per-future timeout
-                        warmup_success += 1
-                except TimeoutError:
-                    logger.warning("⚠️ Warmup timeout for a model")
-                except Exception as e:
-                    logger.error(f"❌ Warmup future error: {e}")
+        for chat_tuple in chats:
+            if chat_tuple:
+                chat, model_name, _ = chat_tuple
+                if warmup_model(chat, model_name):  # Individual call with internal timeout
+                    warmup_success += 1
         
         ready_model_count = warmup_success
         models_ready = ready_model_count >= 1  # Proceed if at least 1 ready
-        logger.info(f"✅ Warmup done: {warmup_success}/{len(futures)} models ready. Proceeding...")
+        logger.info(f"✅ Warmup done: {warmup_success}/{initialized_count} models ready. Proceeding...")
     except FileNotFoundError:
         logger.error("❌ context.json not found. Using fallback.")
         # Fallback context with specified rules
@@ -187,9 +183,6 @@ def analyze_with_model(chat_tuple, content_list, timeout=5):
         else:
             logger.debug(f"⚠️ Response from {model_name} too short ({word_count} words): '{assistant_response}'")
             return None, model_name
-    except TimeoutError:
-        logger.warning(f"⚠️ Timeout in model {model_name}")
-        return None, model_name
     except Exception as e:
         logger.error(f"❌ Error in model {model_name}: {e}")
         return None, model_name
@@ -246,7 +239,7 @@ def upload_screenshot():
                 audio_url = None
                 response_text = None
                 try:
-                    logger.info("🤖 Starting parallel Gemini analysis for %s with %d models", filename, ready_model_count)
+                    logger.info("🤖 Starting Gemini analysis for %s with %d models", filename, ready_model_count)
                     
                     current_image = Image.open(filepath)
                     logger.info("🖼️ Image loaded successfully (PIL format)")
@@ -260,50 +253,32 @@ def upload_screenshot():
                     if len(selected_chats) < 1:
                         raise ValueError("No ready models available")
                     
-                    with ThreadPoolExecutor(max_workers=min(3, len(selected_chats))) as executor:
-                        futures = {
-                            executor.submit(analyze_with_model, chat_tuple, content_list, timeout=5): name
-                            for chat_tuple, name in zip(selected_chats, [name for _, name, _ in selected_chats])
-                        }
-                        
-                        for future in as_completed(futures, timeout=8):
-                            model_name = futures[future]
-                            try:
-                                result, _ = future.result(timeout=3)
-                                if result:
-                                    response_text = result
-                                    logger.info("🔍 Valid event from %s (first to respond): '%s'", model_name, result)
-                                    
-                                    # Generate TTS
-                                    logger.info("🔊 Generating TTS audio...")
-                                    tts = gTTS(text=response_text, lang='hi', slow=False)
-                                    audio_filename = f"audio_{timestamp}.mp3"
-                                    audio_path = os.path.join(AUDIO_DIR, audio_filename)
-                                    tts.save(audio_path)
-                                    
-                                    audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
-                                    size_audio = os.path.getsize(audio_path)
-                                    logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi', slow=False)", audio_url, size_audio)
-                                    
-                                    # Update global latest
-                                    latest_audio_url = audio_url
-                                    latest_timestamp = datetime.now().isoformat()
-                                    latest_response_text = response_text
-                                    
-                                    # Cancel remaining for speed
-                                    for f in futures:
-                                        if not f.done():
-                                            f.cancel()
-                                    break
-                            except TimeoutError:
-                                logger.warning(f"⚠️ Future timeout for {model_name}")
-                                continue
-                            except Exception as exc:
-                                logger.error(f"❌ Future for {model_name} generated exception: {exc}")
-                                continue
+                    # Sequential analysis for stability (first ready model)
+                    for chat_tuple in selected_chats[:1]:  # Use first ready for speed, no parallel
+                        result, model_name = analyze_with_model(chat_tuple, content_list)
+                        if result:
+                            response_text = result
+                            logger.info("🔍 Valid event from %s: '%s'", model_name, result)
+                            
+                            # Generate TTS
+                            logger.info("🔊 Generating TTS audio...")
+                            tts = gTTS(text=response_text, lang='hi', slow=False)
+                            audio_filename = f"audio_{timestamp}.mp3"
+                            audio_path = os.path.join(AUDIO_DIR, audio_filename)
+                            tts.save(audio_path)
+                            
+                            audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
+                            size_audio = os.path.getsize(audio_path)
+                            logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi', slow=False)", audio_url, size_audio)
+                            
+                            # Update global latest
+                            latest_audio_url = audio_url
+                            latest_timestamp = datetime.now().isoformat()
+                            latest_response_text = response_text
+                            break
                     
                     if not response_text:
-                        logger.info("🤐 No valid event from any model - staying silent, no audio")
+                        logger.info("🤐 No valid event from models - staying silent, no audio")
                         # Reset latest if no event
                         latest_audio_url = None
                         latest_timestamp = None
