@@ -7,6 +7,8 @@ from datetime import datetime
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from collections import deque
+import threading
 
 # Setup logging (more verbose for polling)
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +23,12 @@ latest_audio_url = None
 latest_timestamp = None
 latest_response_text = None  # Optional: Store text for logging
 
-# Configure Gemini with multiple keys (workaround for multi-key)
+# Image queue for buffering (max 5 to skip overload)
+image_queue = deque(maxlen=5)
+queue_lock = threading.Lock()
+models_ready = False
+
+# Configure Gemini with multiple keys
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 GEMINI_API_KEY_2 = os.environ.get('GEMINI_API_KEY_2', GEMINI_API_KEY)  # Fallback to first if not set
 
@@ -29,9 +36,9 @@ if not GEMINI_API_KEY:
     logger.error("❌ GEMINI_API_KEY not set!")
     raise ValueError("GEMINI_API_KEY required")
 
-# Models: Use valid ones to avoid errors
-model_names = ['gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash']
-api_keys = [GEMINI_API_KEY, GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_2]
+# Models: 3 valid ones
+model_names = ['gemini-2.5-flash-lite', 'learnlm-2.0-flash-experimental', 'gemini-2.5-flash-lite']
+api_keys = [GEMINI_API_KEY, GEMINI_API_KEY, GEMINI_API_KEY_2]
 
 chats = []
 system_instruction = None
@@ -52,9 +59,22 @@ def cleanup_old_audios(max_files=50):
 
 cleanup_old_audios()
 
-# Load system instruction to all four models
+# Warmup function for models
+def warmup_model(chat, model_name):
+    try:
+        # Dummy prompt for warmup (no image, simple text)
+        dummy_prompt = "फ्री फायर गेम में एक महत्वपूर्ण घटना का वर्णन करें।"
+        response = chat.send_message(dummy_prompt)
+        if response.candidates:
+            logger.info(f"✅ Warmup complete for {model_name}")
+            return True
+    except Exception as e:
+        logger.error(f"❌ Warmup failed for {model_name}: {e}")
+    return False
+
+# Load system instruction and warmup all models
 def load_system_instruction():
-    global system_instruction, chats
+    global system_instruction, chats, models_ready
     logger.info("🔄 Loading system instruction from context.json to all models...")
     try:
         with open('context.json', 'r', encoding='utf-8') as f:
@@ -69,12 +89,20 @@ def load_system_instruction():
                 model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
                 chat = model.start_chat()
                 chats.append((chat, model_name, api_key))
-                logger.info(f"✅ Model {i+1} ({model_name}) initialized with key {i//2 + 1}")
+                logger.info(f"✅ Model {i+1} ({model_name}) initialized with key {i//2 + 1 if len(api_keys)>1 else 1}")
             except Exception as model_err:
                 logger.error(f"❌ Failed to init model {model_name}: {model_err}")
-                # Skip invalid models
                 chats.append(None)
-        logger.info("✅ System instruction loaded to valid models.")
+        
+        # Warmup all models in parallel
+        logger.info("🔥 Starting model warmup...")
+        with ThreadPoolExecutor(max_workers=len(chats)) as executor:
+            futures = [executor.submit(warmup_model, chat, name) for chat, name, _ in chats if chat]
+            for future in as_completed(futures, timeout=15):
+                future.result()  # Wait for all
+        
+        models_ready = True
+        logger.info("✅ All models warmed up and ready!")
     except FileNotFoundError:
         logger.error("❌ context.json not found. Using fallback.")
         # Fallback context with specified rules
@@ -99,10 +127,11 @@ def load_system_instruction():
         load_system_instruction()
     except Exception as e:
         logger.error(f"❌ Error loading context: {e}")
+        models_ready = False
 
 load_system_instruction()
 SERVER_URL = "https://practice-ppaz.onrender.com"
-logger.info(f"🚀 Server initialized at {SERVER_URL}. Ready for screenshots. Polling: {SERVER_URL}/latest-audio")
+logger.info(f"🚀 Server initialized at {SERVER_URL}. Models ready: {models_ready}. Polling: {SERVER_URL}/latest-audio")
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -111,8 +140,9 @@ DASHBOARD_TEMPLATE = """
 <body>
     <h1>Latest Screenshots (Last 5)</h1>
     <p>Server: https://practice-ppaz.onrender.com</p>
-    <p>Connect your client app to https://practice-ppaz.onrender.com for polling /latest-audio every 3s.</p>
+    <p>Connect your client app to https://practice-ppaz.onrender.com for polling /latest-audio every 1-2s.</p>
     <p>To keep server alive: Ping /ping every 10 min (e.g., via UptimeRobot).</p>
+    <p>Models Ready: {{ ready }}</p>
     <p>Total processed: {{ total }}</p>
     {% for file in files %}
         <div>
@@ -127,7 +157,7 @@ DASHBOARD_TEMPLATE = """
 </html>
 """
 
-def analyze_with_model(chat_tuple, content_list, timeout=8):
+def analyze_with_model(chat_tuple, content_list, timeout=5):
     """Analyze image with a single model and return response or None if invalid."""
     if not chat_tuple:
         return None, "Skipped"
@@ -158,11 +188,11 @@ def analyze_with_model(chat_tuple, content_list, timeout=8):
 @app.route('/ping', methods=['GET'])
 def ping():
     logger.info("🏓 Ping received - server alive!")
-    return jsonify({"status": "alive", "server": SERVER_URL}), 200
+    return jsonify({"status": "alive", "server": SERVER_URL, "models_ready": models_ready}), 200
 
 @app.route('/upload', methods=['POST'])
 def upload_screenshot():
-    global latest_audio_url, latest_timestamp, latest_response_text
+    global latest_audio_url, latest_timestamp, latest_response_text, models_ready
     logger.info("📥 POST to /upload received. Headers: %s", dict(request.headers))
     try:
         if 'file' not in request.files:
@@ -185,90 +215,116 @@ def upload_screenshot():
             size = os.path.getsize(filepath)
             logger.info("💾 Screenshot saved: %s, Size: %d bytes at %s", filename, size, filepath)
             
-            # Process with 2 models in parallel (reduced for memory)
-            audio_url = None
-            response_text = None
-            try:
-                logger.info("🤖 Starting parallel Gemini analysis for %s with 2 models", filename)
-                
-                current_image = Image.open(filepath)
-                logger.info("🖼️ Image loaded successfully (PIL format)")
-                
-                prompt_text = "इस नए फ्री फायर स्क्रीनशॉट का विश्लेषण करें: दुश्मन, नीला जोन, कम एचपी, टीममेट डाउन, दुश्मन को नुकसान आदि महत्वपूर्ण घटनाओं के लिए। यदि महत्वपूर्ण हो तो केवल उत्तर दें (संक्षिप्त देवनागरी लिपि में शुद्ध हिंदी सलाह, कोई अंग्रेजी शब्द न हो); अन्यथा खाली स्ट्रिंग। यदि कोई महत्वपूर्ण घटना न हो तो बिल्कुल खाली string लौटाओ, कोई punctuation या space न डालो।"
-                content_list = [prompt_text, current_image]
-                logger.info("📝 Prompt prepared: Pure Devanagari enforced, shortened")
-                
-                # Select 2 valid models (indices 0,1)
-                selected_indices = [0, 1]
-                selected_chats = [chats[i] for i in selected_indices if chats[i]]
-                
-                if len(selected_chats) == 0:
-                    raise ValueError("No valid models available")
-                
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    futures = {
-                        executor.submit(analyze_with_model, chat, content_list, timeout=8): model_names[i]
-                        for i, chat in zip(selected_indices, selected_chats)
-                    }
-                    
-                    for future in as_completed(futures, timeout=10):
-                        model_name = futures[future]
-                        try:
-                            result, _ = future.result(timeout=5)
-                            if result:
-                                response_text = result
-                                logger.info("🔍 Valid event from %s (first to respond): '%s'", model_name, result)
-                                
-                                # Generate TTS
-                                logger.info("🔊 Generating TTS audio...")
-                                tts = gTTS(text=response_text, lang='hi', slow=False)
-                                audio_filename = f"audio_{timestamp}.mp3"
-                                audio_path = os.path.join(AUDIO_DIR, audio_filename)
-                                tts.save(audio_path)
-                                
-                                audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
-                                size_audio = os.path.getsize(audio_path)
-                                logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi', slow=False)", audio_url, size_audio)
-                                
-                                # Update global latest
-                                latest_audio_url = audio_url
-                                latest_timestamp = datetime.now().isoformat()
-                                latest_response_text = response_text
-                                
-                                # Cancel remaining for speed
-                                for f in futures:
-                                    if not f.done():
-                                        f.cancel()
-                                break
-                        except TimeoutError:
-                            logger.warning(f"⚠️ Future timeout for {model_name}")
-                            continue
-                        except Exception as exc:
-                            logger.error(f"❌ Future for {model_name} generated exception: {exc}")
-                            continue
-                
-                if not response_text:
-                    logger.info("🤐 No valid event from any model - staying silent, no audio")
-                    # Reset latest if no event
-                    latest_audio_url = None
-                    latest_timestamp = None
-                    latest_response_text = None
-                        
-                cleanup_old_audios()
-            except Exception as ai_err:
-                logger.error("❌ AI Processing Error: %s", str(ai_err))
+            # Queue the image if models not ready or queue full
+            with queue_lock:
+                if not models_ready or len(image_queue) >= 5:
+                    if not models_ready:
+                        logger.info("⏳ Models warming up - skipping image %s", filename)
+                    else:
+                        logger.info("🗑️ Queue full (5) - skipping oldest image")
+                    # Still save but skip process
+                    return jsonify({
+                        "success": True,
+                        "filename": filename,
+                        "size": size,
+                        "skipped": True,
+                        "message": "Image queued/skipped for speed. Poll /latest-audio."
+                    }), 200
+                image_queue.append((filepath, timestamp, filename))
+            
+            # Process from queue (only if ready)
+            if models_ready:
                 audio_url = None
                 response_text = None
-            
-            logger.info("✅ Upload & process complete for %s. Audio: %s | Response: '%s'", filename, audio_url or "None", response_text or "Empty")
-            return jsonify({
-                "success": True,
-                "filename": filename,
-                "size": size,
-                "audio_url": audio_url,
-                "response_text": response_text,
-                "message": "Screenshot processed successfully! Poll /latest-audio for new audio."
-            }), 200
+                try:
+                    logger.info("🤖 Starting parallel Gemini analysis for %s with 3 models", filename)
+                    
+                    current_image = Image.open(filepath)
+                    logger.info("🖼️ Image loaded successfully (PIL format)")
+                    
+                    prompt_text = "इस नए फ्री फायर स्क्रीनशॉट का विश्लेषण करें: दुश्मन, नीला जोन, कम एचपी, टीममेट डाउन, दुश्मन को नुकसान आदि महत्वपूर्ण घटनाओं के लिए। यदि महत्वपूर्ण हो तो केवल उत्तर दें (संक्षिप्त देवनागरी लिपि में शुद्ध हिंदी सलाह, कोई अंग्रेजी शब्द न हो); अन्यथा खाली स्ट्रिंग। यदि कोई महत्वपूर्ण घटना न हो तो बिल्कुल खाली string लौटाओ, कोई punctuation या space न डालो।"
+                    content_list = [prompt_text, current_image]
+                    logger.info("📝 Prompt prepared: Pure Devanagari enforced, shortened")
+                    
+                    # Select 3 valid models
+                    selected_indices = [0, 1, 2]
+                    selected_chats = [chats[i] for i in selected_indices if chats[i]]
+                    
+                    if len(selected_chats) < 2:
+                        raise ValueError("Not enough valid models")
+                    
+                    with ThreadPoolExecutor(max_workers=3) as executor:
+                        futures = {
+                            executor.submit(analyze_with_model, chat, content_list, timeout=5): model_names[i]
+                            for i, chat in zip(selected_indices, selected_chats)
+                        }
+                        
+                        for future in as_completed(futures, timeout=8):
+                            model_name = futures[future]
+                            try:
+                                result, _ = future.result(timeout=3)
+                                if result:
+                                    response_text = result
+                                    logger.info("🔍 Valid event from %s (first to respond): '%s'", model_name, result)
+                                    
+                                    # Generate TTS
+                                    logger.info("🔊 Generating TTS audio...")
+                                    tts = gTTS(text=response_text, lang='hi', slow=False)
+                                    audio_filename = f"audio_{timestamp}.mp3"
+                                    audio_path = os.path.join(AUDIO_DIR, audio_filename)
+                                    tts.save(audio_path)
+                                    
+                                    audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
+                                    size_audio = os.path.getsize(audio_path)
+                                    logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi', slow=False)", audio_url, size_audio)
+                                    
+                                    # Update global latest
+                                    latest_audio_url = audio_url
+                                    latest_timestamp = datetime.now().isoformat()
+                                    latest_response_text = response_text
+                                    
+                                    # Cancel remaining for speed
+                                    for f in futures:
+                                        if not f.done():
+                                            f.cancel()
+                                    break
+                            except TimeoutError:
+                                logger.warning(f"⚠️ Future timeout for {model_name}")
+                                continue
+                            except Exception as exc:
+                                logger.error(f"❌ Future for {model_name} generated exception: {exc}")
+                                continue
+                    
+                    if not response_text:
+                        logger.info("🤐 No valid event from any model - staying silent, no audio")
+                        # Reset latest if no event
+                        latest_audio_url = None
+                        latest_timestamp = None
+                        latest_response_text = None
+                            
+                    cleanup_old_audios()
+                except Exception as ai_err:
+                    logger.error("❌ AI Processing Error: %s", str(ai_err))
+                    audio_url = None
+                    response_text = None
+                
+                logger.info("✅ Upload & process complete for %s. Audio: %s | Response: '%s'", filename, audio_url or "None", response_text or "Empty")
+                return jsonify({
+                    "success": True,
+                    "filename": filename,
+                    "size": size,
+                    "audio_url": audio_url,
+                    "response_text": response_text,
+                    "message": "Screenshot processed successfully! Poll /latest-audio for new audio."
+                }), 200
+            else:
+                return jsonify({
+                    "success": True,
+                    "filename": filename,
+                    "size": size,
+                    "queued": True,
+                    "message": "Image queued during warmup. Poll /latest-audio."
+                }), 200
         else:
             logger.warning("⚠️ Invalid file type: %s (must be JPG)", file.filename)
             return jsonify({"error": "Invalid file type - must be JPG"}), 400
@@ -312,7 +368,7 @@ def serve_audio(filename):
 
 @app.route('/reset-chat', methods=['POST'])
 def reset_chat():
-    global latest_audio_url, latest_timestamp, latest_response_text
+    global latest_audio_url, latest_timestamp, latest_response_text, models_ready
     logger.info("🔄 Reset chat requested")
     try:
         load_system_instruction()
@@ -329,12 +385,13 @@ def reset_chat():
 
 @app.route('/', methods=['GET'])
 def dashboard():
+    global models_ready
     logger.info("📊 Dashboard accessed")
     all_files = [f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')]
     files = sorted(all_files, reverse=True)[:5]
     total = len(all_files)
     logger.info("📋 Dashboard showing %d files, total: %d", len(files), total)
-    return render_template_string(DASHBOARD_TEMPLATE, files=files, total=total)
+    return render_template_string(DASHBOARD_TEMPLATE, files=files, total=total, ready=str(models_ready))
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
