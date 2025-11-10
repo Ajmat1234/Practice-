@@ -6,8 +6,7 @@ from gtts import gTTS
 from datetime import datetime
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from google.ai import generativelanguage as glm  # For custom clients
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
 # Setup logging (more verbose for polling)
 logging.basicConfig(level=logging.INFO)
@@ -22,29 +21,19 @@ latest_audio_url = None
 latest_timestamp = None
 latest_response_text = None  # Optional: Store text for logging
 
-# Configure Gemini with multiple keys
+# Configure Gemini with multiple keys (workaround for multi-key)
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-GEMINI_API_KEY_2 = os.environ.get('GEMINI_API_KEY_2', None)
+GEMINI_API_KEY_2 = os.environ.get('GEMINI_API_KEY_2', GEMINI_API_KEY)  # Fallback to first if not set
 
 if not GEMINI_API_KEY:
     logger.error("❌ GEMINI_API_KEY not set!")
     raise ValueError("GEMINI_API_KEY required")
 
-genai.configure(api_key=GEMINI_API_KEY)  # Default to first key
+# Models: Use valid ones to avoid errors
+model_names = ['gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash']
+api_keys = [GEMINI_API_KEY, GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_2]
 
-# Create custom clients for multiple keys
-client1 = glm.GenerativeServiceClient(client_options={'api_key': GEMINI_API_KEY})
-if GEMINI_API_KEY_2:
-    client2 = glm.GenerativeServiceClient(client_options={'api_key': GEMINI_API_KEY_2})
-else:
-    logger.warning("⚠️ GEMINI_API_KEY_2 not set, using single key for all models")
-    client2 = client1
-
-# Models and chats
 chats = []
-model_names = ['gemini-2.5-flash-lite', 'learnlm-2.0-flash-experimental', 'gemini-2.5-flash-lite', 'learnlm-2.0-flash-experimental']
-clients = [client1, client1, client2, client2]
-
 system_instruction = None
 
 # Directories
@@ -73,14 +62,19 @@ def load_system_instruction():
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         
         chats = []
-        for i, (model_name, client) in enumerate(zip(model_names, clients)):
-            model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
-            model._client = client
-            chat = model.start_chat()
-            chats.append(chat)
-            logger.info(f"✅ Model {i+1} ({model_name}) initialized with client {1 if i<2 else 2}")
-        
-        logger.info("✅ System instruction loaded to all four models and new chat sessions started.")
+        for i, (model_name, api_key) in enumerate(zip(model_names, api_keys)):
+            # Temp configure for each
+            genai.configure(api_key=api_key)
+            try:
+                model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
+                chat = model.start_chat()
+                chats.append((chat, model_name, api_key))
+                logger.info(f"✅ Model {i+1} ({model_name}) initialized with key {i//2 + 1}")
+            except Exception as model_err:
+                logger.error(f"❌ Failed to init model {model_name}: {model_err}")
+                # Skip invalid models
+                chats.append(None)
+        logger.info("✅ System instruction loaded to valid models.")
     except FileNotFoundError:
         logger.error("❌ context.json not found. Using fallback.")
         # Fallback context with specified rules
@@ -133,8 +127,11 @@ DASHBOARD_TEMPLATE = """
 </html>
 """
 
-def analyze_with_model(chat, model_name, content_list):
+def analyze_with_model(chat_tuple, content_list, timeout=8):
     """Analyze image with a single model and return response or None if invalid."""
+    if not chat_tuple:
+        return None, "Skipped"
+    chat, model_name, _ = chat_tuple
     try:
         response = chat.send_message(content=content_list)
         assistant_response = ""
@@ -151,6 +148,9 @@ def analyze_with_model(chat, model_name, content_list):
         else:
             logger.debug(f"⚠️ Response from {model_name} too short ({word_count} words): '{assistant_response}'")
             return None, model_name
+    except TimeoutError:
+        logger.warning(f"⚠️ Timeout in model {model_name}")
+        return None, model_name
     except Exception as e:
         logger.error(f"❌ Error in model {model_name}: {e}")
         return None, model_name
@@ -185,11 +185,11 @@ def upload_screenshot():
             size = os.path.getsize(filepath)
             logger.info("💾 Screenshot saved: %s, Size: %d bytes at %s", filename, size, filepath)
             
-            # Process with 3 models in parallel (for speed)
+            # Process with 2 models in parallel (reduced for memory)
             audio_url = None
             response_text = None
             try:
-                logger.info("🤖 Starting parallel Gemini analysis for %s with 3 models", filename)
+                logger.info("🤖 Starting parallel Gemini analysis for %s with 2 models", filename)
                 
                 current_image = Image.open(filepath)
                 logger.info("🖼️ Image loaded successfully (PIL format)")
@@ -198,18 +198,23 @@ def upload_screenshot():
                 content_list = [prompt_text, current_image]
                 logger.info("📝 Prompt prepared: Pure Devanagari enforced, shortened")
                 
-                # Select 3 models (e.g., indices 0,1,2 for balance; rotate in future if needed)
-                selected_models = [0, 1, 2]  # First 3 for now; can cycle
-                selected_chats = [chats[i] for i in selected_models]
-                selected_names = [model_names[i] for i in selected_models]
+                # Select 2 valid models (indices 0,1)
+                selected_indices = [0, 1]
+                selected_chats = [chats[i] for i in selected_indices if chats[i]]
                 
-                with ThreadPoolExecutor(max_workers=3) as executor:
-                    futures = {executor.submit(analyze_with_model, chat, name, content_list): name for chat, name in zip(selected_chats, selected_names)}
+                if len(selected_chats) == 0:
+                    raise ValueError("No valid models available")
+                
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = {
+                        executor.submit(analyze_with_model, chat, content_list, timeout=8): model_names[i]
+                        for i, chat in zip(selected_indices, selected_chats)
+                    }
                     
-                    for future in as_completed(futures):
+                    for future in as_completed(futures, timeout=10):
                         model_name = futures[future]
                         try:
-                            result, _ = future.result()
+                            result, _ = future.result(timeout=5)
                             if result:
                                 response_text = result
                                 logger.info("🔍 Valid event from %s (first to respond): '%s'", model_name, result)
@@ -230,11 +235,14 @@ def upload_screenshot():
                                 latest_timestamp = datetime.now().isoformat()
                                 latest_response_text = response_text
                                 
-                                # Log ignored others
-                                remaining = len([f for f in futures if not f.done()])
-                                if remaining > 0:
-                                    logger.info("⏭️ Ignored %d remaining model responses for speed", remaining)
-                                break  # Use first valid
+                                # Cancel remaining for speed
+                                for f in futures:
+                                    if not f.done():
+                                        f.cancel()
+                                break
+                        except TimeoutError:
+                            logger.warning(f"⚠️ Future timeout for {model_name}")
+                            continue
                         except Exception as exc:
                             logger.error(f"❌ Future for {model_name} generated exception: {exc}")
                             continue
