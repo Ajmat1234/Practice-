@@ -10,8 +10,6 @@ import logging
 import shutil  # For cleanup
 import asyncio  # For async WS (kept but unused now)
 from flask_sock import Sock  # For plain WebSocket support in Flask (commented out)
-from pydub import AudioSegment  # For speeding up audio
-import pyaudioop as audioop
 
 # Setup logging (more verbose for polling)
 logging.basicConfig(level=logging.INFO)
@@ -107,14 +105,14 @@ def load_system_instruction():
             "title": "Free Fire AI Assistant Context",
             "ai_instructions": {
                 "general_rules": [
-                    "AI हर 3-4 सेकंड में image observe करेगा लेकिन तभी बोलेगा जब कोई महत्वपूर्ण event दिखे।",
-                    "अगर enemy (बंदा) दिखे तो तुरंत कहो: 'बंदा देखा है, उसे मारो!'",
-                    "अगर enemy को damage दिया है तो कहो: 'Grenade फेंको!'",
-                    "अगर Blue Zone आ रहा हो या shrink हो रहा हो तो कहो: 'Safe Zone में जाओ!'",
-                    "अगर teammate down हो जाए तो कहो: 'Teammate को revive करो!'",
-                    "अगर player की HP 50 से कम हो तो कहो: 'Medkit लगाओ!'",
-                    "अगर 3+ enemies पास में तो कहो: 'छिप जाओ और teammates को बुलाओ!'",
-                    "लैंडिंग, लूटिंग या शांत समय में कुछ न बोलो। Response हमेशा छोटा, सटीक और हिंदी में।",
+                    "हर सेकंड image observe करो लेकिन तभी बोलोगे जब कोई महत्वपूर्ण event दिखे।",
+                    "अगर enemy (बंदा) दिखे तो तुरंत कहो: 'बंदा देखा है, उसे मारो! या अगल बगल देखो'",
+                    "अगर enemy को damage दिया है तो कहो: 'ग्रेनेड फेंको! या बन्दे देख कर रस करो '",
+                    "अगर Blue Zone आ रहा हो या shrink हो रहा हो तो कहो: 'सेफ जोन में जाओ!'",
+                    "अगर teammate down हो जाए तो कहो: 'दोस्तों को मदद करो!'",
+                    "अगर player की HP 50 से कम हो तो कहो: 'ग्लू लगाकर मेडिसन लगाओ! या दौड़ते हुए हेल्थ बढ़ाओ '",
+                    "अगर 3+ enemies पास में तो कहो: 'छिप जाओ और दोस्तों को बुलाओ!'",
+                    "लैंडिंग, लूटिंग या शांत समय में कुछ न बोलो। Response हमेशा छोटा, सटीक और देवनागरी हिंदी में।",
                     "जब कुछ भी महत्वपूर्ण न हो तो कोई response न दो।"
                 ]
             }
@@ -238,21 +236,16 @@ def upload_screenshot():
                     response_text = assistant_response
                     logger.info("🔍 Important event detected: '%s'", assistant_response)
                     
-                    # Generate TTS (gTTS 'hi' lang) and speed up
+                    # Generate TTS (gTTS 'hi' lang, slow=False)
                     logger.info("🔊 Generating TTS audio...")
                     tts = gTTS(text=assistant_response, lang='hi', slow=False)
                     audio_filename = f"audio_{timestamp}.mp3"
                     audio_path = os.path.join(AUDIO_DIR, audio_filename)
                     tts.save(audio_path)
                     
-                    # Speed up audio with pydub
-                    audio = AudioSegment.from_mp3(audio_path)
-                    faster_audio = audio.speedup(playback_speed=1.2)
-                    faster_audio.export(audio_path, format="mp3")
-                    
                     audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
                     size_audio = os.path.getsize(audio_path)
-                    logger.info("🎵 Audio generated and sped up: %s, Size: %d bytes (gTTS lang='hi', 1.2x speed)", audio_url, size_audio)
+                    logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi', slow=False)", audio_url, size_audio)
                     
                     # NEW: Update global latest for polling
                     latest_audio_url = audio_url
