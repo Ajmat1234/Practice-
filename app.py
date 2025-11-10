@@ -27,6 +27,7 @@ latest_response_text = None  # Optional: Store text for logging
 image_queue = deque(maxlen=5)
 queue_lock = threading.Lock()
 models_ready = False
+ready_model_count = 0
 
 # Configure Gemini with multiple keys
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
@@ -74,7 +75,7 @@ def warmup_model(chat, model_name):
 
 # Load system instruction and warmup all models
 def load_system_instruction():
-    global system_instruction, chats, models_ready
+    global system_instruction, chats, models_ready, ready_model_count
     logger.info("🔄 Loading system instruction from context.json to all models...")
     try:
         with open('context.json', 'r', encoding='utf-8') as f:
@@ -89,20 +90,28 @@ def load_system_instruction():
                 model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
                 chat = model.start_chat()
                 chats.append((chat, model_name, api_key))
-                logger.info(f"✅ Model {i+1} ({model_name}) initialized with key {i//2 + 1 if len(api_keys)>1 else 1}")
+                logger.info(f"✅ Model {i+1} ({model_name}) initialized with key {1 if i < 2 else 2}")
             except Exception as model_err:
                 logger.error(f"❌ Failed to init model {model_name}: {model_err}")
                 chats.append(None)
         
-        # Warmup all models in parallel
+        # Warmup all models in parallel (graceful handling)
         logger.info("🔥 Starting model warmup...")
+        warmup_success = 0
         with ThreadPoolExecutor(max_workers=len(chats)) as executor:
             futures = [executor.submit(warmup_model, chat, name) for chat, name, _ in chats if chat]
-            for future in as_completed(futures, timeout=15):
-                future.result()  # Wait for all
+            for future in as_completed(futures, timeout=10):  # Reduced timeout
+                try:
+                    if future.result(timeout=3):  # Per-future timeout
+                        warmup_success += 1
+                except TimeoutError:
+                    logger.warning("⚠️ Warmup timeout for a model")
+                except Exception as e:
+                    logger.error(f"❌ Warmup future error: {e}")
         
-        models_ready = True
-        logger.info("✅ All models warmed up and ready!")
+        ready_model_count = warmup_success
+        models_ready = ready_model_count >= 1  # Proceed if at least 1 ready
+        logger.info(f"✅ Warmup done: {warmup_success}/{len(futures)} models ready. Proceeding...")
     except FileNotFoundError:
         logger.error("❌ context.json not found. Using fallback.")
         # Fallback context with specified rules
@@ -131,7 +140,7 @@ def load_system_instruction():
 
 load_system_instruction()
 SERVER_URL = "https://practice-ppaz.onrender.com"
-logger.info(f"🚀 Server initialized at {SERVER_URL}. Models ready: {models_ready}. Polling: {SERVER_URL}/latest-audio")
+logger.info(f"🚀 Server initialized at {SERVER_URL}. Models ready: {models_ready} ({ready_model_count}/3). Polling: {SERVER_URL}/latest-audio")
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -142,7 +151,7 @@ DASHBOARD_TEMPLATE = """
     <p>Server: https://practice-ppaz.onrender.com</p>
     <p>Connect your client app to https://practice-ppaz.onrender.com for polling /latest-audio every 1-2s.</p>
     <p>To keep server alive: Ping /ping every 10 min (e.g., via UptimeRobot).</p>
-    <p>Models Ready: {{ ready }}</p>
+    <p>Models Ready: {{ ready }} ({{ count }}/3)</p>
     <p>Total processed: {{ total }}</p>
     {% for file in files %}
         <div>
@@ -188,7 +197,7 @@ def analyze_with_model(chat_tuple, content_list, timeout=5):
 @app.route('/ping', methods=['GET'])
 def ping():
     logger.info("🏓 Ping received - server alive!")
-    return jsonify({"status": "alive", "server": SERVER_URL, "models_ready": models_ready}), 200
+    return jsonify({"status": "alive", "server": SERVER_URL, "models_ready": models_ready, "ready_count": ready_model_count}), 200
 
 @app.route('/upload', methods=['POST'])
 def upload_screenshot():
@@ -237,7 +246,7 @@ def upload_screenshot():
                 audio_url = None
                 response_text = None
                 try:
-                    logger.info("🤖 Starting parallel Gemini analysis for %s with 3 models", filename)
+                    logger.info("🤖 Starting parallel Gemini analysis for %s with %d models", filename, ready_model_count)
                     
                     current_image = Image.open(filepath)
                     logger.info("🖼️ Image loaded successfully (PIL format)")
@@ -246,17 +255,15 @@ def upload_screenshot():
                     content_list = [prompt_text, current_image]
                     logger.info("📝 Prompt prepared: Pure Devanagari enforced, shortened")
                     
-                    # Select 3 valid models
-                    selected_indices = [0, 1, 2]
-                    selected_chats = [chats[i] for i in selected_indices if chats[i]]
+                    # Select ready models (up to 3)
+                    selected_chats = [(chat, name, key) for chat, name, key in chats if chat is not None]
+                    if len(selected_chats) < 1:
+                        raise ValueError("No ready models available")
                     
-                    if len(selected_chats) < 2:
-                        raise ValueError("Not enough valid models")
-                    
-                    with ThreadPoolExecutor(max_workers=3) as executor:
+                    with ThreadPoolExecutor(max_workers=min(3, len(selected_chats))) as executor:
                         futures = {
-                            executor.submit(analyze_with_model, chat, content_list, timeout=5): model_names[i]
-                            for i, chat in zip(selected_indices, selected_chats)
+                            executor.submit(analyze_with_model, chat_tuple, content_list, timeout=5): name
+                            for chat_tuple, name in zip(selected_chats, [name for _, name, _ in selected_chats])
                         }
                         
                         for future in as_completed(futures, timeout=8):
@@ -385,13 +392,13 @@ def reset_chat():
 
 @app.route('/', methods=['GET'])
 def dashboard():
-    global models_ready
+    global models_ready, ready_model_count
     logger.info("📊 Dashboard accessed")
     all_files = [f for f in os.listdir(SAVE_DIR) if f.endswith('.jpg')]
     files = sorted(all_files, reverse=True)[:5]
     total = len(all_files)
     logger.info("📋 Dashboard showing %d files, total: %d", len(files), total)
-    return render_template_string(DASHBOARD_TEMPLATE, files=files, total=total, ready=str(models_ready))
+    return render_template_string(DASHBOARD_TEMPLATE, files=files, total=total, ready=str(models_ready), count=ready_model_count)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
