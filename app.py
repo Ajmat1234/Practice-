@@ -10,7 +10,8 @@ import logging
 import shutil  # For cleanup
 import asyncio  # For async WS (kept but unused now)
 from flask_sock import Sock  # For plain WebSocket support in Flask (commented out)
-from pydub import AudioSegment, pyaudioop  # For speeding up audio
+from pydub import AudioSegment  # For speeding up audio
+import pyaudioop as audioop
 
 # Setup logging (more verbose for polling)
 logging.basicConfig(level=logging.INFO)
