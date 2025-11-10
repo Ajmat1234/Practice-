@@ -10,6 +10,7 @@ import logging
 import shutil  # For cleanup
 import asyncio  # For async WS (kept but unused now)
 from flask_sock import Sock  # For plain WebSocket support in Flask (commented out)
+from pydub import AudioSegment  # For speeding up audio
 
 # Setup logging (more verbose for polling)
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +28,11 @@ latest_audio_url = None
 latest_timestamp = None
 latest_response_text = None  # Optional: Store text for logging
 
+# NEW: Globals for model rotation
+current_phase = 1
+phase_counts = {1: 0, 2: 0, 3: 0}
+phase_quotas = {1: 30, 2: 15, 3: 15}
+
 # Configure Gemini
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 if not GEMINI_API_KEY:
@@ -35,7 +41,9 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 system_instruction = None
-chat = None
+chat1 = None  # gemini-2.0-flash-lite
+chat2 = None  # gemini-2.0-flash
+chat3 = None  # gemini-2.5-flash-lite
 
 # Directories
 SAVE_DIR = './screenshots'
@@ -56,20 +64,41 @@ def cleanup_old_audios(max_files=50):
 
 cleanup_old_audios()
 
-# Load system instruction
+# Load system instruction to all three models
 def load_system_instruction():
-    global system_instruction, chat
-    logger.info("🔄 Loading system instruction from context.json...")
+    global system_instruction, chat1, chat2, chat3, current_phase, phase_counts
+    logger.info("🔄 Loading system instruction from context.json to all models...")
     try:
         with open('context.json', 'r', encoding='utf-8') as f:
             context = json.load(f)
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
-        model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',  # 2025 model (fallback to 'gemini-1.5-flash')
+        
+        # Model 1: gemini-2.0-flash-lite (30 RPM)
+        model1 = genai.GenerativeModel(
+            model_name='gemini-2.0-flash-lite',
             system_instruction=system_instruction
         )
-        chat = model.start_chat()
-        logger.info("✅ System instruction loaded and new chat session started.")
+        chat1 = model1.start_chat()
+        
+        # Model 2: gemini-2.0-flash (15 RPM)
+        model2 = genai.GenerativeModel(
+            model_name='gemini-2.0-flash',
+            system_instruction=system_instruction
+        )
+        chat2 = model2.start_chat()
+        
+        # Model 3: gemini-2.5-flash-lite (15 RPM)
+        model3 = genai.GenerativeModel(
+            model_name='gemini-2.5-flash-lite',
+            system_instruction=system_instruction
+        )
+        chat3 = model3.start_chat()
+        
+        # Reset phases for new session
+        current_phase = 1
+        phase_counts = {1: 0, 2: 0, 3: 0}
+        
+        logger.info("✅ System instruction loaded to all three models and new chat sessions started.")
     except FileNotFoundError:
         logger.error("❌ context.json not found. Using fallback.")
         # Fallback context (same as your code)
@@ -129,6 +158,7 @@ def ping():
 
 @app.route('/upload', methods=['POST'])
 def upload_screenshot():
+    global current_phase, phase_counts, latest_audio_url, latest_timestamp, latest_response_text
     logger.info("📥 POST to /upload received. Headers: %s", dict(request.headers))
     try:
         if 'file' not in request.files:
@@ -151,11 +181,11 @@ def upload_screenshot():
             size = os.path.getsize(filepath)
             logger.info("💾 Screenshot saved: %s, Size: %d bytes at %s", filename, size, filepath)
             
-            # Process with Gemini
+            # Process with Gemini (rotated model)
             audio_url = None
             response_text = None
             try:
-                logger.info("🤖 Starting Gemini analysis for %s", filename)
+                logger.info("🤖 Starting Gemini analysis for %s (Phase: %d, Count: %d/%d)", filename, current_phase, phase_counts[current_phase], phase_quotas[current_phase])
                 
                 current_image = Image.open(filepath)
                 logger.info("🖼️ Image loaded successfully (PIL format)")
@@ -164,68 +194,83 @@ def upload_screenshot():
                 content_list = [prompt_text, current_image]
                 logger.info("📝 Prompt prepared: Pure Devanagari enforced")
                 
-                if chat:
-                    response = chat.send_message(content=content_list)
-                    assistant_response = ""
-                    if response.candidates and len(response.candidates) > 0:
-                        candidate = response.candidates[0]
-                        if candidate.content and candidate.content.parts and len(candidate.content.parts) > 0:  # Safe check
-                            part = candidate.content.parts[0]
-                            if hasattr(part, 'text') and part.text:
-                                assistant_response = part.text.strip()
-                        else:
-                            logger.warning("⚠️ Gemini response parts empty - no text extracted")
-                    logger.info("📨 Gemini extracted response: '%s'", assistant_response)
-                    
-                    if assistant_response:
-                        response_text = assistant_response
-                        logger.info("🔍 Important event detected: '%s'", assistant_response)
-                        
-                        # Generate TTS (gTTS 'hi' lang)
-                        logger.info("🔊 Generating TTS audio...")
-                        tts = gTTS(text=assistant_response, lang='hi', slow=False)
-                        audio_filename = f"audio_{timestamp}.mp3"
-                        audio_path = os.path.join(AUDIO_DIR, audio_filename)
-                        tts.save(audio_path)
-                        
-                        audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
-                        size_audio = os.path.getsize(audio_path)
-                        logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi')", audio_url, size_audio)
-                        
-                        # NEW: Update global latest for polling
-                        global latest_audio_url, latest_timestamp, latest_response_text
-                        latest_audio_url = audio_url
-                        latest_timestamp = datetime.now().isoformat()
-                        latest_response_text = assistant_response
-                        
-                        # OLD WS push (commented out - polling now handles)
-                        # try:
-                        #     logger.info(f"🔄 Attempting WS push - Current clients count: {len(clients)}")
-                        #     loop = asyncio.new_event_loop()
-                        #     asyncio.set_event_loop(loop)
-                        #     loop.run_until_complete(send_audio_to_clients(audio_url, assistant_response))
-                        #     loop.close()
-                        #     logger.info("✅ WS push attempted successfully")
-                        # except Exception as push_err:
-                        #     logger.error(f"❌ WS Push Error: {push_err}")
-                        
-                        cleanup_old_audios()
-                    else:
-                        logger.info("🤐 No important event - staying silent")
-                        # Reset latest if no event
-                        latest_audio_url = None
-                        latest_timestamp = None
-                        latest_response_text = None
+                # Select chat based on current phase
+                if current_phase == 1 and chat1:
+                    response = chat1.send_message(content=content_list)
+                    phase_counts[1] += 1
+                    model_name = "gemini-2.0-flash-lite"
+                elif current_phase == 2 and chat2:
+                    response = chat2.send_message(content=content_list)
+                    phase_counts[2] += 1
+                    model_name = "gemini-2.0-flash"
+                elif current_phase == 3 and chat3:
+                    response = chat3.send_message(content=content_list)
+                    phase_counts[3] += 1
+                    model_name = "gemini-2.5-flash-lite"
                 else:
-                    logger.error("❌ Chat session not initialized")
-                    audio_url = None
+                    logger.error("❌ No valid chat for current phase")
+                    return jsonify({"error": "Model not available"}), 500
+                
+                # Switch phase if quota reached
+                if phase_counts[current_phase] >= phase_quotas[current_phase]:
+                    if current_phase == 3:
+                        current_phase = 1
+                        phase_counts = {1: 0, 2: 0, 3: 0}
+                        logger.info("🔄 Full cycle complete - Reset to phase 1")
+                    else:
+                        current_phase += 1
+                        logger.info("🔄 Switched to phase %d", current_phase)
+                
+                assistant_response = ""
+                if response.candidates and len(response.candidates) > 0:
+                    candidate = response.candidates[0]
+                    if candidate.content and candidate.content.parts and len(candidate.content.parts) > 0:  # Safe check
+                        part = candidate.content.parts[0]
+                        if hasattr(part, 'text') and part.text:
+                            assistant_response = part.text.strip()
+                    else:
+                        logger.warning("⚠️ Gemini response parts empty - no text extracted")
+                logger.info("📨 Gemini extracted response from %s: '%s'", model_name, assistant_response)
+                
+                # Skip if empty response
+                if assistant_response:
+                    response_text = assistant_response
+                    logger.info("🔍 Important event detected: '%s'", assistant_response)
                     
+                    # Generate TTS (gTTS 'hi' lang) and speed up
+                    logger.info("🔊 Generating TTS audio...")
+                    tts = gTTS(text=assistant_response, lang='hi', slow=False)
+                    audio_filename = f"audio_{timestamp}.mp3"
+                    audio_path = os.path.join(AUDIO_DIR, audio_filename)
+                    tts.save(audio_path)
+                    
+                    # Speed up audio with pydub
+                    audio = AudioSegment.from_mp3(audio_path)
+                    faster_audio = audio.speedup(playback_speed=1.2)
+                    faster_audio.export(audio_path, format="mp3")
+                    
+                    audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
+                    size_audio = os.path.getsize(audio_path)
+                    logger.info("🎵 Audio generated and sped up: %s, Size: %d bytes (gTTS lang='hi', 1.2x speed)", audio_url, size_audio)
+                    
+                    # NEW: Update global latest for polling
+                    latest_audio_url = audio_url
+                    latest_timestamp = datetime.now().isoformat()
+                    latest_response_text = assistant_response
+                else:
+                    logger.info("🤐 No important event (empty response) - staying silent, no audio")
+                    # Reset latest if no event
+                    latest_audio_url = None
+                    latest_timestamp = None
+                    latest_response_text = None
+                        
+                cleanup_old_audios()
             except Exception as ai_err:
                 logger.error("❌ AI Processing Error: %s", str(ai_err))
                 audio_url = None
                 response_text = None
             
-            logger.info("✅ Upload & process complete for %s. Audio: %s | Response: '%s'", filename, audio_url or "None", response_text or "Empty")
+            logger.info("✅ Upload & process complete for %s. Audio: %s | Response: '%s' | Phase: %d", filename, audio_url or "None", response_text or "Empty", current_phase)
             return jsonify({
                 "success": True,
                 "filename": filename,
@@ -313,12 +358,12 @@ def serve_audio(filename):
 
 @app.route('/reset-chat', methods=['POST'])
 def reset_chat():
+    global current_phase, phase_counts, latest_audio_url, latest_timestamp, latest_response_text
     logger.info("🔄 Reset chat requested")
     try:
         load_system_instruction()
         cleanup_old_audios()
         # NEW: Reset latest audio on reset
-        global latest_audio_url, latest_timestamp, latest_response_text
         latest_audio_url = None
         latest_timestamp = None
         latest_response_text = None
