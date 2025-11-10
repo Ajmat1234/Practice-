@@ -1,4 +1,4 @@
-from flask import Flask, request, pyaudioop, jsonify, send_from_directory, render_template_string
+from flask import Flask, request, jsonify, send_from_directory, render_template_string
 import os
 import google.generativeai as genai
 from PIL import Image
@@ -10,7 +10,7 @@ import logging
 import shutil  # For cleanup
 import asyncio  # For async WS (kept but unused now)
 from flask_sock import Sock  # For plain WebSocket support in Flask (commented out)
-from pydub import AudioSegment  # For speeding up audio
+from pydub import AudioSegment, pyaudioop  # For speeding up audio
 
 # Setup logging (more verbose for polling)
 logging.basicConfig(level=logging.INFO)
