@@ -4,12 +4,10 @@ import google.generativeai as genai
 from PIL import Image
 from gtts import gTTS
 from datetime import datetime
-import io
 import json
 import logging
-import shutil  # For cleanup
-import asyncio  # For async WS (kept but unused now)
-from flask_sock import Sock  # For plain WebSocket support in Flask (commented out)
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from google.ai import generativelanguage as glm  # For custom clients
 
 # Setup logging (more verbose for polling)
 logging.basicConfig(level=logging.INFO)
@@ -19,39 +17,41 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1000 * 1024  # 10MB limit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret')
 
-# Flask-Sock for plain WebSockets (commented out - polling now)
-# sock = Sock(app)
-
-# NEW: Globals for latest audio (polling support)
+# Globals for latest audio (polling support)
 latest_audio_url = None
 latest_timestamp = None
 latest_response_text = None  # Optional: Store text for logging
 
-# NEW: Globals for model rotation
-current_phase = 1
-phase_counts = {1: 0, 2: 0, 3: 0}
-phase_quotas = {1: 30, 2: 15, 3: 15}
-
-# Configure Gemini
+# Configure Gemini with multiple keys
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+GEMINI_API_KEY_2 = os.environ.get('GEMINI_API_KEY_2', None)
+
 if not GEMINI_API_KEY:
     logger.error("❌ GEMINI_API_KEY not set!")
     raise ValueError("GEMINI_API_KEY required")
 
-genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)  # Default to first key
+
+# Create custom clients for multiple keys
+client1 = glm.GenerativeServiceClient(client_options={'api_key': GEMINI_API_KEY})
+if GEMINI_API_KEY_2:
+    client2 = glm.GenerativeServiceClient(client_options={'api_key': GEMINI_API_KEY_2})
+else:
+    logger.warning("⚠️ GEMINI_API_KEY_2 not set, using single key for all models")
+    client2 = client1
+
+# Models and chats
+chats = []
+model_names = ['gemini-2.5-flash-lite', 'learnlm-2.0-flash-experimental', 'gemini-2.5-flash-lite', 'learnlm-2.0-flash-experimental']
+clients = [client1, client1, client2, client2]
+
 system_instruction = None
-chat1 = None  # gemini-2.0-flash-lite
-chat2 = None  # gemini-2.0-flash
-chat3 = None  # gemini-2.5-flash-lite
 
 # Directories
 SAVE_DIR = './screenshots'
 AUDIO_DIR = './static/audio'
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
-
-# Track connected WS clients (commented out - unused now)
-# clients = set()
 
 # Cleanup old audios
 def cleanup_old_audios(max_files=50):
@@ -63,44 +63,27 @@ def cleanup_old_audios(max_files=50):
 
 cleanup_old_audios()
 
-# Load system instruction to all three models
+# Load system instruction to all four models
 def load_system_instruction():
-    global system_instruction, chat1, chat2, chat3, current_phase, phase_counts
+    global system_instruction, chats
     logger.info("🔄 Loading system instruction from context.json to all models...")
     try:
         with open('context.json', 'r', encoding='utf-8') as f:
             context = json.load(f)
         system_instruction = json.dumps(context, ensure_ascii=False, indent=2)
         
-        # Model 1: gemini-2.0-flash-lite (30 RPM)
-        model1 = genai.GenerativeModel(
-            model_name='gemini-2.0-flash-lite',
-            system_instruction=system_instruction
-        )
-        chat1 = model1.start_chat()
+        chats = []
+        for i, (model_name, client) in enumerate(zip(model_names, clients)):
+            model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
+            model._client = client
+            chat = model.start_chat()
+            chats.append(chat)
+            logger.info(f"✅ Model {i+1} ({model_name}) initialized with client {1 if i<2 else 2}")
         
-        # Model 2: gemini-2.0-flash (15 RPM)
-        model2 = genai.GenerativeModel(
-            model_name='gemini-2.0-flash',
-            system_instruction=system_instruction
-        )
-        chat2 = model2.start_chat()
-        
-        # Model 3: gemini-2.5-flash-lite (15 RPM)
-        model3 = genai.GenerativeModel(
-            model_name='gemini-2.5-flash-lite',
-            system_instruction=system_instruction
-        )
-        chat3 = model3.start_chat()
-        
-        # Reset phases for new session
-        current_phase = 1
-        phase_counts = {1: 0, 2: 0, 3: 0}
-        
-        logger.info("✅ System instruction loaded to all three models and new chat sessions started.")
+        logger.info("✅ System instruction loaded to all four models and new chat sessions started.")
     except FileNotFoundError:
         logger.error("❌ context.json not found. Using fallback.")
-        # Fallback context (same as your code)
+        # Fallback context with specified rules
         default_context = {
             "title": "Free Fire AI Assistant Context",
             "ai_instructions": {
@@ -150,6 +133,28 @@ DASHBOARD_TEMPLATE = """
 </html>
 """
 
+def analyze_with_model(chat, model_name, content_list):
+    """Analyze image with a single model and return response or None if invalid."""
+    try:
+        response = chat.send_message(content=content_list)
+        assistant_response = ""
+        if response.candidates and len(response.candidates) > 0:
+            candidate = response.candidates[0]
+            if candidate.content and candidate.content.parts and len(candidate.content.parts) > 0:
+                part = candidate.content.parts[0]
+                if hasattr(part, 'text') and part.text:
+                    assistant_response = part.text.strip()
+        # Check if valid: more than 4 words
+        word_count = len(assistant_response.split())
+        if word_count > 4:
+            return assistant_response, model_name
+        else:
+            logger.debug(f"⚠️ Response from {model_name} too short ({word_count} words): '{assistant_response}'")
+            return None, model_name
+    except Exception as e:
+        logger.error(f"❌ Error in model {model_name}: {e}")
+        return None, model_name
+
 @app.route('/ping', methods=['GET'])
 def ping():
     logger.info("🏓 Ping received - server alive!")
@@ -157,7 +162,7 @@ def ping():
 
 @app.route('/upload', methods=['POST'])
 def upload_screenshot():
-    global current_phase, phase_counts, latest_audio_url, latest_timestamp, latest_response_text
+    global latest_audio_url, latest_timestamp, latest_response_text
     logger.info("📥 POST to /upload received. Headers: %s", dict(request.headers))
     try:
         if 'file' not in request.files:
@@ -180,79 +185,62 @@ def upload_screenshot():
             size = os.path.getsize(filepath)
             logger.info("💾 Screenshot saved: %s, Size: %d bytes at %s", filename, size, filepath)
             
-            # Process with Gemini (rotated model)
+            # Process with 3 models in parallel (for speed)
             audio_url = None
             response_text = None
             try:
-                logger.info("🤖 Starting Gemini analysis for %s (Phase: %d, Count: %d/%d)", filename, current_phase, phase_counts[current_phase], phase_quotas[current_phase])
+                logger.info("🤖 Starting parallel Gemini analysis for %s with 3 models", filename)
                 
                 current_image = Image.open(filepath)
                 logger.info("🖼️ Image loaded successfully (PIL format)")
                 
-                prompt_text = "इस नए फ्री फायर स्क्रीनशॉट का विश्लेषण करें: दुश्मन, नीला जोन, कम एचपी, टीममेट डाउन, दुश्मन को नुकसान आदि महत्वपूर्ण घटनाओं के लिए। यदि महत्वपूर्ण हो तो केवल उत्तर दें (संक्षिप्त देवनागरी लिपि में शुद्ध हिंदी सलाह, कोई अंग्रेजी शब्द न हो); अन्यथा खाली स्ट्रिंग।"
+                prompt_text = "इस नए फ्री फायर स्क्रीनशॉट का विश्लेषण करें: दुश्मन, नीला जोन, कम एचपी, टीममेट डाउन, दुश्मन को नुकसान आदि महत्वपूर्ण घटनाओं के लिए। यदि महत्वपूर्ण हो तो केवल उत्तर दें (संक्षिप्त देवनागरी लिपि में शुद्ध हिंदी सलाह, कोई अंग्रेजी शब्द न हो); अन्यथा खाली स्ट्रिंग। यदि कोई महत्वपूर्ण घटना न हो तो बिल्कुल खाली string लौटाओ, कोई punctuation या space न डालो।"
                 content_list = [prompt_text, current_image]
-                logger.info("📝 Prompt prepared: Pure Devanagari enforced")
+                logger.info("📝 Prompt prepared: Pure Devanagari enforced, shortened")
                 
-                # Select chat based on current phase
-                if current_phase == 1 and chat1:
-                    response = chat1.send_message(content=content_list)
-                    phase_counts[1] += 1
-                    model_name = "gemini-2.0-flash-lite"
-                elif current_phase == 2 and chat2:
-                    response = chat2.send_message(content=content_list)
-                    phase_counts[2] += 1
-                    model_name = "gemini-2.0-flash"
-                elif current_phase == 3 and chat3:
-                    response = chat3.send_message(content=content_list)
-                    phase_counts[3] += 1
-                    model_name = "gemini-2.5-flash-lite"
-                else:
-                    logger.error("❌ No valid chat for current phase")
-                    return jsonify({"error": "Model not available"}), 500
+                # Select 3 models (e.g., indices 0,1,2 for balance; rotate in future if needed)
+                selected_models = [0, 1, 2]  # First 3 for now; can cycle
+                selected_chats = [chats[i] for i in selected_models]
+                selected_names = [model_names[i] for i in selected_models]
                 
-                # Switch phase if quota reached
-                if phase_counts[current_phase] >= phase_quotas[current_phase]:
-                    if current_phase == 3:
-                        current_phase = 1
-                        phase_counts = {1: 0, 2: 0, 3: 0}
-                        logger.info("🔄 Full cycle complete - Reset to phase 1")
-                    else:
-                        current_phase += 1
-                        logger.info("🔄 Switched to phase %d", current_phase)
-                
-                assistant_response = ""
-                if response.candidates and len(response.candidates) > 0:
-                    candidate = response.candidates[0]
-                    if candidate.content and candidate.content.parts and len(candidate.content.parts) > 0:  # Safe check
-                        part = candidate.content.parts[0]
-                        if hasattr(part, 'text') and part.text:
-                            assistant_response = part.text.strip()
-                    else:
-                        logger.warning("⚠️ Gemini response parts empty - no text extracted")
-                logger.info("📨 Gemini extracted response from %s: '%s'", model_name, assistant_response)
-                
-                # Skip if empty response
-                if assistant_response:
-                    response_text = assistant_response
-                    logger.info("🔍 Important event detected: '%s'", assistant_response)
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = {executor.submit(analyze_with_model, chat, name, content_list): name for chat, name in zip(selected_chats, selected_names)}
                     
-                    # Generate TTS (gTTS 'hi' lang, slow=False)
-                    logger.info("🔊 Generating TTS audio...")
-                    tts = gTTS(text=assistant_response, lang='hi', slow=False)
-                    audio_filename = f"audio_{timestamp}.mp3"
-                    audio_path = os.path.join(AUDIO_DIR, audio_filename)
-                    tts.save(audio_path)
-                    
-                    audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
-                    size_audio = os.path.getsize(audio_path)
-                    logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi', slow=False)", audio_url, size_audio)
-                    
-                    # NEW: Update global latest for polling
-                    latest_audio_url = audio_url
-                    latest_timestamp = datetime.now().isoformat()
-                    latest_response_text = assistant_response
-                else:
-                    logger.info("🤐 No important event (empty response) - staying silent, no audio")
+                    for future in as_completed(futures):
+                        model_name = futures[future]
+                        try:
+                            result, _ = future.result()
+                            if result:
+                                response_text = result
+                                logger.info("🔍 Valid event from %s (first to respond): '%s'", model_name, result)
+                                
+                                # Generate TTS
+                                logger.info("🔊 Generating TTS audio...")
+                                tts = gTTS(text=response_text, lang='hi', slow=False)
+                                audio_filename = f"audio_{timestamp}.mp3"
+                                audio_path = os.path.join(AUDIO_DIR, audio_filename)
+                                tts.save(audio_path)
+                                
+                                audio_url = f"{SERVER_URL}/static/audio/{audio_filename}"
+                                size_audio = os.path.getsize(audio_path)
+                                logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi', slow=False)", audio_url, size_audio)
+                                
+                                # Update global latest
+                                latest_audio_url = audio_url
+                                latest_timestamp = datetime.now().isoformat()
+                                latest_response_text = response_text
+                                
+                                # Log ignored others
+                                remaining = len([f for f in futures if not f.done()])
+                                if remaining > 0:
+                                    logger.info("⏭️ Ignored %d remaining model responses for speed", remaining)
+                                break  # Use first valid
+                        except Exception as exc:
+                            logger.error(f"❌ Future for {model_name} generated exception: {exc}")
+                            continue
+                
+                if not response_text:
+                    logger.info("🤐 No valid event from any model - staying silent, no audio")
                     # Reset latest if no event
                     latest_audio_url = None
                     latest_timestamp = None
@@ -264,7 +252,7 @@ def upload_screenshot():
                 audio_url = None
                 response_text = None
             
-            logger.info("✅ Upload & process complete for %s. Audio: %s | Response: '%s' | Phase: %d", filename, audio_url or "None", response_text or "Empty", current_phase)
+            logger.info("✅ Upload & process complete for %s. Audio: %s | Response: '%s'", filename, audio_url or "None", response_text or "Empty")
             return jsonify({
                 "success": True,
                 "filename": filename,
@@ -280,7 +268,7 @@ def upload_screenshot():
         logger.error("❌ General Upload Error: %s", str(e))
         return jsonify({"error": str(e)}), 500
 
-# NEW: Polling endpoint for latest audio
+# Polling endpoint for latest audio
 @app.route('/latest-audio', methods=['GET'])
 def get_latest_audio():
     global latest_audio_url, latest_timestamp, latest_response_text
@@ -294,42 +282,6 @@ def get_latest_audio():
     else:
         logger.debug("📡 Polling - no new audio")
         return jsonify({"audio_url": None, "timestamp": None, "response_text": None}), 200
-
-# OLD: Async WS send (commented out)
-# async def send_audio_to_clients(audio_url, text):
-#     global clients
-#     if not clients:
-#         logger.warning("⚠️ No WS clients connected - skipping push")
-#         return
-#     message = json.dumps({'audio_url': audio_url, 'text': text})
-#     disconnected = set()
-#     sent_count = 0
-#     for client in clients.copy():  # Copy to avoid modification during iteration
-#         try:
-#             await client.send(message)
-#             sent_count += 1
-#             logger.info(f"📤 Sent audio to client ({sent_count}/{len(clients)}): {audio_url}")
-#         except Exception as e:
-#             logger.error(f"❌ Failed to send to client: {e}")
-#             disconnected.add(client)
-#     clients -= disconnected  # Remove dead clients
-#     logger.info(f"📤 Push complete: Sent to {sent_count} clients, removed {len(disconnected)} dead")
-
-# OLD: WS route (commented out)
-# @sock.route('/ws-audio')
-# async def ws_audio(ws):
-#     client_id = id(ws)  # Unique ID for logging
-#     logger.info("🔌 WS Client CONNECTED to /ws-audio (ID: %d) - Total clients now: %d", client_id, len(clients) + 1)
-#     clients.add(ws)
-#     logger.info("🔌 Client %d added to set - Current clients: %d", client_id, len(clients))
-#     try:
-#         async for message in ws:
-#             logger.info(f"📨 WS message received from client %d: %s", client_id, message)
-#     except Exception as e:
-#         logger.error(f"❌ WS error for client %d: %s", client_id, e)
-#     finally:
-#         clients.discard(ws)
-#         logger.info("🔌 WS Client %d DISCONNECTED - Total clients now: %d", client_id, len(clients))
 
 # Other routes (same)
 @app.route('/image/<filename>')
@@ -352,12 +304,12 @@ def serve_audio(filename):
 
 @app.route('/reset-chat', methods=['POST'])
 def reset_chat():
-    global current_phase, phase_counts, latest_audio_url, latest_timestamp, latest_response_text
+    global latest_audio_url, latest_timestamp, latest_response_text
     logger.info("🔄 Reset chat requested")
     try:
         load_system_instruction()
         cleanup_old_audios()
-        # NEW: Reset latest audio on reset
+        # Reset latest audio on reset
         latest_audio_url = None
         latest_timestamp = None
         latest_response_text = None
@@ -379,5 +331,4 @@ def dashboard():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"🚀 Starting server on port {port}")
-    # sock.run(app, host='0.0.0.0', port=port, debug=False)  # Commented: Use app.run for polling-only
     app.run(host='0.0.0.0', port=port, debug=False)
