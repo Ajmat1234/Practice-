@@ -8,10 +8,10 @@ import io
 import json
 import logging
 import shutil  # For cleanup
-import asyncio  # For async WS
-from flask_sock import Sock  # For plain WebSocket support in Flask
+import asyncio  # For async WS (kept but unused now)
+from flask_sock import Sock  # For plain WebSocket support in Flask (commented out)
 
-# Setup logging (more verbose for WS)
+# Setup logging (more verbose for polling)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -19,8 +19,13 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1000 * 1024  # 10MB limit
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret')
 
-# Flask-Sock for plain WebSockets
-sock = Sock(app)
+# Flask-Sock for plain WebSockets (commented out - polling now)
+# sock = Sock(app)
+
+# NEW: Globals for latest audio (polling support)
+latest_audio_url = None
+latest_timestamp = None
+latest_response_text = None  # Optional: Store text for logging
 
 # Configure Gemini
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
@@ -38,8 +43,8 @@ AUDIO_DIR = './static/audio'
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# Track connected WS clients (set of WebSocket objects)
-clients = set()
+# Track connected WS clients (commented out - unused now)
+# clients = set()
 
 # Cleanup old audios
 def cleanup_old_audios(max_files=50):
@@ -92,7 +97,7 @@ def load_system_instruction():
 
 load_system_instruction()
 SERVER_URL = "https://practice-ppaz.onrender.com"
-logger.info(f"🚀 Server initialized at {SERVER_URL}. Ready for screenshots. WS: wss://{SERVER_URL.split('//')[1]}/ws-audio")
+logger.info(f"🚀 Server initialized at {SERVER_URL}. Ready for screenshots. Polling: {SERVER_URL}/latest-audio")
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -101,7 +106,7 @@ DASHBOARD_TEMPLATE = """
 <body>
     <h1>Latest Screenshots (Last 5)</h1>
     <p>Server: https://practice-ppaz.onrender.com</p>
-    <p>Connect your client app to wss://practice-ppaz.onrender.com/ws-audio for real-time audio.</p>
+    <p>Connect your client app to https://practice-ppaz.onrender.com for polling /latest-audio every 3s.</p>
     <p>To keep server alive: Ping /ping every 10 min (e.g., via UptimeRobot).</p>
     <p>Total processed: {{ total }}</p>
     {% for file in files %}
@@ -187,21 +192,30 @@ def upload_screenshot():
                         size_audio = os.path.getsize(audio_path)
                         logger.info("🎵 Audio generated: %s, Size: %d bytes (gTTS lang='hi')", audio_url, size_audio)
                         
-                        # Push to connected WS clients (separate try for push only)
-                        try:
-                            logger.info(f"🔄 Attempting WS push - Current clients count: {len(clients)}")  # New log
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            loop.run_until_complete(send_audio_to_clients(audio_url, assistant_response))
-                            loop.close()
-                            logger.info("✅ WS push attempted successfully")
-                        except Exception as push_err:
-                            logger.error(f"❌ WS Push Error: {push_err}")
-                            # Don't fail the whole process - audio_url still valid for HTTP response
+                        # NEW: Update global latest for polling
+                        global latest_audio_url, latest_timestamp, latest_response_text
+                        latest_audio_url = audio_url
+                        latest_timestamp = datetime.now().isoformat()
+                        latest_response_text = assistant_response
+                        
+                        # OLD WS push (commented out - polling now handles)
+                        # try:
+                        #     logger.info(f"🔄 Attempting WS push - Current clients count: {len(clients)}")
+                        #     loop = asyncio.new_event_loop()
+                        #     asyncio.set_event_loop(loop)
+                        #     loop.run_until_complete(send_audio_to_clients(audio_url, assistant_response))
+                        #     loop.close()
+                        #     logger.info("✅ WS push attempted successfully")
+                        # except Exception as push_err:
+                        #     logger.error(f"❌ WS Push Error: {push_err}")
                         
                         cleanup_old_audios()
                     else:
                         logger.info("🤐 No important event - staying silent")
+                        # Reset latest if no event
+                        latest_audio_url = None
+                        latest_timestamp = None
+                        latest_response_text = None
                 else:
                     logger.error("❌ Chat session not initialized")
                     audio_url = None
@@ -218,7 +232,7 @@ def upload_screenshot():
                 "size": size,
                 "audio_url": audio_url,
                 "response_text": response_text,
-                "message": "Screenshot processed successfully! If no WS, play audio manually: " + (audio_url or "None")  # Fallback hint
+                "message": "Screenshot processed successfully! Poll /latest-audio for new audio."
             }), 200
         else:
             logger.warning("⚠️ Invalid file type: %s (must be JPG)", file.filename)
@@ -227,45 +241,58 @@ def upload_screenshot():
         logger.error("❌ General Upload Error: %s", str(e))
         return jsonify({"error": str(e)}), 500
 
-# Async function to send audio to all clients
-async def send_audio_to_clients(audio_url, text):
-    global clients
-    if not clients:
-        logger.warning("⚠️ No WS clients connected - skipping push")
-        return
-    message = json.dumps({'audio_url': audio_url, 'text': text})
-    disconnected = set()
-    sent_count = 0
-    for client in clients.copy():  # Copy to avoid modification during iteration
-        try:
-            await client.send(message)
-            sent_count += 1
-            logger.info(f"📤 Sent audio to client ({sent_count}/{len(clients)}): {audio_url}")
-        except Exception as e:
-            logger.error(f"❌ Failed to send to client: {e}")
-            disconnected.add(client)
-    clients -= disconnected  # Remove dead clients
-    logger.info(f"📤 Push complete: Sent to {sent_count} clients, removed {len(disconnected)} dead")
+# NEW: Polling endpoint for latest audio
+@app.route('/latest-audio', methods=['GET'])
+def get_latest_audio():
+    global latest_audio_url, latest_timestamp, latest_response_text
+    if latest_audio_url and latest_timestamp:
+        logger.info("📡 Polling request - returning latest: %s", latest_audio_url)
+        return jsonify({
+            "audio_url": latest_audio_url,
+            "timestamp": latest_timestamp,
+            "response_text": latest_response_text  # Optional: for UI hint
+        }), 200
+    else:
+        logger.debug("📡 Polling - no new audio")
+        return jsonify({"audio_url": None, "timestamp": None, "response_text": None}), 200
 
-# Plain WebSocket route for /ws-audio using flask-sock
-@sock.route('/ws-audio')
-async def ws_audio(ws):
-    client_id = id(ws)  # Unique ID for logging
-    logger.info("🔌 WS Client CONNECTED to /ws-audio (ID: %d) - Total clients now: %d", client_id, len(clients) + 1)  # Enhanced log
-    clients.add(ws)
-    logger.info("🔌 Client %d added to set - Current clients: %d", client_id, len(clients))
-    try:
-        # Listen for messages (e.g., pings) without blocking
-        async for message in ws:
-            logger.info(f"📨 WS message received from client %d: %s", client_id, message)
-            # Handle if needed (e.g., pong)
-    except Exception as e:
-        logger.error(f"❌ WS error for client %d: %s", client_id, e)
-    finally:
-        clients.discard(ws)
-        logger.info("🔌 WS Client %d DISCONNECTED - Total clients now: %d", client_id, len(clients))
+# OLD: Async WS send (commented out)
+# async def send_audio_to_clients(audio_url, text):
+#     global clients
+#     if not clients:
+#         logger.warning("⚠️ No WS clients connected - skipping push")
+#         return
+#     message = json.dumps({'audio_url': audio_url, 'text': text})
+#     disconnected = set()
+#     sent_count = 0
+#     for client in clients.copy():  # Copy to avoid modification during iteration
+#         try:
+#             await client.send(message)
+#             sent_count += 1
+#             logger.info(f"📤 Sent audio to client ({sent_count}/{len(clients)}): {audio_url}")
+#         except Exception as e:
+#             logger.error(f"❌ Failed to send to client: {e}")
+#             disconnected.add(client)
+#     clients -= disconnected  # Remove dead clients
+#     logger.info(f"📤 Push complete: Sent to {sent_count} clients, removed {len(disconnected)} dead")
 
-# Other routes (same as your code)
+# OLD: WS route (commented out)
+# @sock.route('/ws-audio')
+# async def ws_audio(ws):
+#     client_id = id(ws)  # Unique ID for logging
+#     logger.info("🔌 WS Client CONNECTED to /ws-audio (ID: %d) - Total clients now: %d", client_id, len(clients) + 1)
+#     clients.add(ws)
+#     logger.info("🔌 Client %d added to set - Current clients: %d", client_id, len(clients))
+#     try:
+#         async for message in ws:
+#             logger.info(f"📨 WS message received from client %d: %s", client_id, message)
+#     except Exception as e:
+#         logger.error(f"❌ WS error for client %d: %s", client_id, e)
+#     finally:
+#         clients.discard(ws)
+#         logger.info("🔌 WS Client %d DISCONNECTED - Total clients now: %d", client_id, len(clients))
+
+# Other routes (same)
 @app.route('/image/<filename>')
 def serve_image(filename):
     filepath = os.path.join(SAVE_DIR, filename)
@@ -290,6 +317,11 @@ def reset_chat():
     try:
         load_system_instruction()
         cleanup_old_audios()
+        # NEW: Reset latest audio on reset
+        global latest_audio_url, latest_timestamp, latest_response_text
+        latest_audio_url = None
+        latest_timestamp = None
+        latest_response_text = None
         logger.info("✅ Chat reset successful")
         return jsonify({"success": True, "message": "Chat reset for new game."}), 200
     except Exception as e:
@@ -308,4 +340,5 @@ def dashboard():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"🚀 Starting server on port {port}")
-    sock.run(app, host='0.0.0.0', port=port, debug=False)
+    # sock.run(app, host='0.0.0.0', port=port, debug=False)  # Commented: Use app.run for polling-only
+    app.run(host='0.0.0.0', port=port, debug=False)
